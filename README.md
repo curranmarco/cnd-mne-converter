@@ -43,10 +43,21 @@ EEG and the public CND fNIRS layout are supported. Units and electrode scale
 must be explicit. Conversion preserves trial lengths, order, and sampling rates.
 MEG conversion and TRF result files are unsupported.
 
+## GUI
+
+Open CND files in a desktop window and inspect trials in MNE:
+
+```bash
+uv sync --locked --extra gui
+uv run cnd-mne gui
+```
+
+[Instructions and MNE import button](docs/gui.md) ·
+[GUI screenshot](docs/results/browser-import/import-dialog.png).
+
 ## More
 
 - [Usage and field mapping](docs/field-mapping.md): stimuli, auxiliary channels, export.
-- [Desktop viewer](docs/gui.md): `uv sync --locked --extra gui`, then `uv run cnd-mne gui`.
 - [Notebook](examples/walkthrough.ipynb): bundled fixture, then an optional 120 MB download.
 - [Verification](docs/results/README.md): 1,026 public files; 1,017 passed, eight empty, one unreadable.
 - [Development](CONTRIBUTING.md): code map and checks.
