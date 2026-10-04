@@ -168,13 +168,12 @@ class MNECNDRecording:
         n_channels = int(first.shape[1])
         stored_names = neural.external_fields.get("channelNames")
         stored_types = neural.external_fields.get("channelTypes")
-        if channel_names is None:
-            channel_names = (
-                np.atleast_1d(stored_names).ravel()
-                if stored_names is not None
-                else tuple(f"EXT{index:03d}" for index in range(1, n_channels + 1))
-            )
-        names = tuple(str(name) for name in channel_names)
+        if channel_names is not None:
+            names = tuple(str(name) for name in channel_names)
+        elif stored_names is not None:
+            names = tuple(str(name) for name in np.atleast_1d(stored_names).ravel())
+        else:
+            names = tuple(f"EXT{index:03d}" for index in range(1, n_channels + 1))
         if isinstance(channel_types, str):
             types = (channel_types,) * n_channels
         elif channel_types is not None:
