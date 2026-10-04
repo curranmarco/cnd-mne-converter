@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--neural-unit", required=True)
     parser.add_argument("--subject", default="1")
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("docs/results/browser-import")
+        "--output-dir", type=Path, default=Path("outputs/browser-import")
     )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+from ._channels import _matching_biosemi_montage
 from .mne import MNECNDRecording, MontagePolicy, read_cnd_mne
 
 
@@ -253,24 +254,11 @@ class CNDImporterApp:
     @staticmethod
     def _display_raw(raw: Any) -> tuple[Any, str | None]:
         """Recognise complete BioSemi data already transformed by the converter."""
-        import mne
-
         if raw.get_montage() is None:
             return raw, None
         if "device=biosemi" not in (raw.info["description"] or "").lower():
             return raw, None
-        for candidate in (
-            "biosemi16",
-            "biosemi32",
-            "biosemi64",
-            "biosemi128",
-            "biosemi160",
-            "biosemi256",
-        ):
-            montage = mne.channels.make_standard_montage(candidate, head_size=0.095)
-            if set(raw.ch_names) == set(montage.ch_names):
-                return raw, candidate
-        return raw, None
+        return raw, _matching_biosemi_montage("BioSemi", raw.ch_names)
 
     @staticmethod
     def _topomap_sphere(raw: Any) -> tuple[float, float, float, float]:

@@ -1,4 +1,4 @@
-"""Aggregate committed full-dataset verification reports."""
+"""Aggregate verify-dataset JSON reports."""
 
 from __future__ import annotations
 

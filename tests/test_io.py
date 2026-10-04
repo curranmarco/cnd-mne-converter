@@ -11,6 +11,8 @@ import cnd_mne.io as cnd_io
 from cnd_mne import (
     CNDReadError,
     CNDRecording,
+    _mat_decode,
+    _mat_encode,
     available_neural_variables,
     read_cnd,
     read_cnd_neural,
@@ -339,64 +341,64 @@ def test_multiple_recording_modalities_are_selectable_and_preserved(
 
 
 def test_parser_helpers_cover_supported_matlab_layouts() -> None:
-    trials = cnd_io._as_trial_tuple(np.zeros((2, 3, 4)))
+    trials = _mat_decode._as_trial_tuple(np.zeros((2, 3, 4)))
     assert [trial.shape for trial in trials] == [(3, 4), (3, 4)]
-    assert len(cnd_io._as_trial_tuple([np.zeros(2), np.ones(3)])) == 2
-    assert cnd_io._as_feature_tuple([], 0) == ()
-    assert len(cnd_io._as_feature_tuple([np.zeros(2), np.ones(3)], 1)[0]) == 2
-    assert len(cnd_io._as_feature_tuple([[np.zeros(2)], [np.ones(2)]], 2)) == 2
+    assert len(_mat_decode._as_trial_tuple([np.zeros(2), np.ones(3)])) == 2
+    assert _mat_decode._as_feature_tuple([], 0) == ()
+    assert len(_mat_decode._as_feature_tuple([np.zeros(2), np.ones(3)], 1)[0]) == 2
+    assert len(_mat_decode._as_feature_tuple([[np.zeros(2)], [np.ones(2)]], 2)) == 2
     object_features = np.empty(2, dtype=object)
     object_features[0] = [np.zeros(2)]
     object_features[1] = [np.ones(3)]
-    assert len(cnd_io._as_feature_tuple(object_features, 2)) == 2
-    assert cnd_io._as_feature_tuple(np.arange(3), 1)[0][0].shape == (3,)
+    assert len(_mat_decode._as_feature_tuple(object_features, 2)) == 2
+    assert _mat_decode._as_feature_tuple(np.arange(3), 1)[0][0].shape == (3,)
 
     with pytest.raises(CNDReadError, match="Cannot interpret neural"):
-        cnd_io._as_trial_tuple(np.zeros((1, 2, 3, 4)))
+        _mat_decode._as_trial_tuple(np.zeros((1, 2, 3, 4)))
     with pytest.raises(CNDReadError, match="Cannot interpret stimulus"):
-        cnd_io._as_feature_tuple(np.zeros((2, 2)), 3)
+        _mat_decode._as_feature_tuple(np.zeros((2, 2)), 3)
 
 
 def test_channel_location_layouts_and_invalid_layout() -> None:
-    columnar = cnd_io._parse_channel_locations(
+    columnar = _mat_decode._parse_channel_locations(
         {"labels": np.array(["Cz", "Pz"]), "X": np.array([0.0, 1.0])}
     )
-    listed = cnd_io._parse_channel_locations([{"labels": "Cz"}])
+    listed = _mat_decode._parse_channel_locations([{"labels": "Cz"}])
 
     assert columnar == (
         {"labels": "Cz", "X": 0.0},
         {"labels": "Pz", "X": 1.0},
     )
     assert listed == ({"labels": "Cz"},)
-    assert cnd_io._parse_channel_locations(None) is None
+    assert _mat_decode._parse_channel_locations(None) is None
 
     structured = np.array(
         [("Cz", 0.0), ("Pz", 1.0)],
         dtype=[("labels", "U2"), ("X", float)],
     )
-    assert cnd_io._parse_channel_locations(structured) == (
+    assert _mat_decode._parse_channel_locations(structured) == (
         {"labels": "Cz", "X": 0.0},
         {"labels": "Pz", "X": 1.0},
     )
     object_array = np.empty(2, dtype=object)
     object_array[:] = [{"labels": "Cz"}, {"labels": "Pz"}]
-    assert cnd_io._parse_channel_locations(object_array) == (
+    assert _mat_decode._parse_channel_locations(object_array) == (
         {"labels": "Cz"},
         {"labels": "Pz"},
     )
     with pytest.raises(CNDReadError, match="chanlocs"):
-        cnd_io._parse_channel_locations([1, 2])
+        _mat_decode._parse_channel_locations([1, 2])
 
 
 def test_parser_helpers_report_malformed_structures(tmp_path) -> None:
     with pytest.raises(CNDReadError, match="not a MATLAB structure"):
-        cnd_io._parse_neural(1, "eeg", tmp_path / "bad.mat")
+        _mat_decode._parse_neural(1, "eeg", tmp_path / "bad.mat")
     with pytest.raises(CNDReadError, match="missing 'fs'"):
-        cnd_io._parse_neural({"data": np.zeros(4)}, "eeg", tmp_path / "bad.mat")
+        _mat_decode._parse_neural({"data": np.zeros(4)}, "eeg", tmp_path / "bad.mat")
     with pytest.raises(CNDReadError, match="not a MATLAB structure"):
-        cnd_io._parse_stimulus(1, tmp_path / "bad.mat")
+        _mat_decode._parse_stimulus(1, tmp_path / "bad.mat")
     with pytest.raises(CNDReadError, match="missing"):
-        cnd_io._parse_stimulus({"data": [], "names": []}, tmp_path / "bad.mat")
+        _mat_decode._parse_stimulus({"data": [], "names": []}, tmp_path / "bad.mat")
 
 
 def test_matlab_v73_error_gets_actionable_message(monkeypatch, tmp_path) -> None:
@@ -444,7 +446,7 @@ def test_multiple_external_channel_groups_are_combined_without_loss(tmp_path) ->
         "data": [np.arange(4.0) + 10, np.arange(5.0) + 10],
         "kind": "reference",
     }
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.zeros((4, 2)), np.zeros((5, 2))],
             "fs": 10.0,
@@ -480,7 +482,7 @@ def test_multiple_external_channel_groups_are_combined_without_loss(tmp_path) ->
 
 @pytest.mark.parametrize("mat_version", ["5", "7.3"])
 def test_spec_named_external_channel_fields_round_trip(tmp_path, mat_version) -> None:
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.zeros((4, 2)), np.zeros((5, 2))],
             "fs": 10.0,
@@ -520,7 +522,7 @@ def test_fnirs_signal_type_grid_is_normalized_and_written_losslessly(tmp_path) -
     for signal_index in range(3):
         data[signal_index, 0] = np.full((4, 2), signal_index + 1.0)
         data[signal_index, 1] = np.full((5, 2), signal_index + 11.0)
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": data,
             "fs": 25.0,
@@ -552,7 +554,12 @@ def test_atomic_writer_cleans_temporary_file_on_failure(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(cnd_io, "savemat", fail)
     with pytest.raises(RuntimeError, match="disk failure"):
-        cnd_io._atomic_savemat(destination, {"x": 1}, False, True)
+        cnd_io._atomic_save_many(
+            [(destination, {"x": 1})],
+            overwrite=False,
+            compression=True,
+            mat_version="5",
+        )
 
     assert not destination.exists()
     assert not list(tmp_path.iterdir())
@@ -619,8 +626,8 @@ def test_small_path_and_scalar_helpers(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="dataStim.mat"):
         cnd_io._resolve_stimulus_file(tmp_path, None, required=True)
     assert cnd_io._subject_from_filename(tmp_path / "recording.mat") is None
-    assert cnd_io._string_or_default(1, "EEG") == "EEG"
-    assert cnd_io._matlab_value(None).shape == (0, 0)
+    assert _mat_decode._string_or_default(1, "EEG") == "EEG"
+    assert _mat_encode._matlab_value(None).shape == (0, 0)
 
 
 def test_mcos_string_handles_are_decoded_from_workspace() -> None:
@@ -645,7 +652,7 @@ def test_mcos_string_handles_are_decoded_from_workspace() -> None:
 
 
 def test_empty_neural_cells_retain_inferred_channel_count(tmp_path) -> None:
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.ones((3, 2)), np.array([])],
             "fs": 10.0,
@@ -661,7 +668,7 @@ def test_empty_neural_cells_retain_inferred_channel_count(tmp_path) -> None:
 def test_one_sample_multichannel_trial_is_restored_after_matlab_squeeze(
     tmp_path,
 ) -> None:
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.ones((3, 2)), np.array([4.0, 5.0])],
             "fs": 10.0,
@@ -676,7 +683,7 @@ def test_one_sample_multichannel_trial_is_restored_after_matlab_squeeze(
 
 
 def test_empty_original_trial_positions_mean_absent(tmp_path) -> None:
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.ones((3, 2))],
             "fs": 10.0,
@@ -699,7 +706,7 @@ def test_topomap_layout_uses_real_channels_and_preserves_raw_layout(tmp_path) ->
         "outline": np.array(["head", "nose"], dtype=object),
         "mask": np.zeros((3, 2)),
     }
-    neural = cnd_io._parse_neural(
+    neural = _mat_decode._parse_neural(
         {
             "data": [np.ones((3, 2))],
             "fs": 10.0,
@@ -713,7 +720,7 @@ def test_topomap_layout_uses_real_channels_and_preserves_raw_layout(tmp_path) ->
     assert neural.channel_names == ("Cz", "Pz")
     assert neural.channel_locations[1]["pos"].tolist() == [2.0, 3.0]
     assert neural.channel_locations_raw is layout
-    assert cnd_io._neural_to_mat(neural)["chanlocs"] is layout
+    assert _mat_encode._neural_to_mat(neural)["chanlocs"] is layout
 
 
 def test_stimulus_vectors_are_matlab_columns(sample_recording, tmp_path):

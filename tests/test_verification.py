@@ -11,15 +11,15 @@ import pytest
 from scipy.io import savemat
 
 from cnd_mne import CNDNeural, CNDRecording, verify_dataset, write_cnd
-from cnd_mne.cli import main
-from cnd_mne.verification import (
+from cnd_mne._round_trip import (
     _metadata_equal,
     _mne_psd_is_finite,
     _optional_trial_values_equal,
-    _safe_failure_message,
     _serialized_round_trip,
     _stimulus_values_equal,
 )
+from cnd_mne.cli import main
+from cnd_mne.verification import _safe_failure_message
 
 
 def test_verify_dataset_exercises_mne_and_round_trip(

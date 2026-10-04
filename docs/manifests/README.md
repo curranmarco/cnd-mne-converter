@@ -1,4 +1,9 @@
-# Zip checksums
+# Download records
+
+JSON files retain source URLs, sizes, checksums, and verified file counts. Large
+per-file inventories remain in Git history; summary schema 2 records each original
+manifest hash. Fresh inventories can be generated with
+`scripts/download_osf_folder.py --inventory-only`.
 
 Zips used for integration testing. Release assets on [datasets-v0.1](https://github.com/finnjclancy/cnd-mne-converter/releases/tag/datasets-v0.1), not git.
 
@@ -12,16 +17,18 @@ Zips used for integration testing. Release assets on [datasets-v0.1](https://git
 
 Complete Lalor zip: 3,518,927,722 bytes, SHA-256 `4626367ba97f35b5a9e9e15ff19cbe57384a264d56bd076e81b322cbcf725bff`.
 
-## Licence and citation
+## Dataset terms
 
-These are dataset mirrors, not part of this repo's BSD licence. Keep each archive under its original terms and cite both the dataset and [CNSP](https://cnsp-resources.readthedocs.io/en/latest/citation.html).
+The code's BSD licence does not cover recordings. Keep source terms and cite
+[CNSP](https://cnsp-resources.readthedocs.io/en/latest/citation.html) plus the dataset.
+These are recorded terms, not a new rights review.
 
-- **Lalor Natural Speech:** the [underlying data](https://doi.org/10.5061/dryad.070jc) are [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Cite Broderick et al. (2018), DOI [`10.1016/j.cub.2018.01.080`](https://doi.org/10.1016/j.cub.2018.01.080). CNSP does not state a separate licence for its converted CND archive, so continued mirroring should be confirmed with the lab.
-- **AliceSpeech:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Cite Brennan, *EEG Datasets for Naturalistic Listening to “Alice in Wonderland”*, DOI [`10.7302/Z29C6VNH`](https://doi.org/10.7302/Z29C6VNH), and Brennan & Hale (2019). This asset is CNSP's CND conversion, mirrored here without further changes.
-- **AAD KULeuven:** [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Cite Das, Francart, and Bertrand's [Zenodo record](https://doi.org/10.5281/zenodo.4004271) and Biesmans et al. (2016), DOI [`10.1109/TNSRE.2016.2571900`](https://doi.org/10.1109/TNSRE.2016.2571900). This asset is CNSP's CND conversion, mirrored here without further changes. Redistribution must remain non-commercial, attributed, and under the same licence.
-- **Music Imagery:** the underlying [Dryad data](https://doi.org/10.5061/dryad.dbrv15f0j) are CC0; the CND archive includes its own BSD 3-Clause notice. Cite Marion, Di Liberto, and Shamma (2021), parts [I](https://doi.org/10.1523/JNEUROSCI.0183-21.2021) and [II](https://doi.org/10.1523/JNEUROSCI.0184-21.2021).
-
-The CNSP site says each dataset keeps its original licence. Its BSD licence covers CNSP software and documentation; it does not replace these dataset terms.
+| Dataset | Recorded licence / citation |
+| --- | --- |
+| Lalor | Underlying data CC0; CND mirror terms need lab confirmation. [Data](https://doi.org/10.5061/dryad.070jc), [paper](https://doi.org/10.1016/j.cub.2018.01.080) |
+| AliceSpeech | CC BY 4.0. [Data](https://doi.org/10.7302/Z29C6VNH); Brennan & Hale (2019) |
+| AAD KULeuven | CC BY-NC-SA 4.0. [Data](https://doi.org/10.5281/zenodo.4004271), [paper](https://doi.org/10.1109/TNSRE.2016.2571900) |
+| Music Imagery | Underlying data CC0; CND archive includes BSD-3-Clause. [Data](https://doi.org/10.5061/dryad.dbrv15f0j), papers [I](https://doi.org/10.1523/JNEUROSCI.0183-21.2021) / [II](https://doi.org/10.1523/JNEUROSCI.0184-21.2021) |
 
 Downloaded from CNSP, not on that release:
 

@@ -7,7 +7,7 @@ import tempfile
 import time
 import warnings
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -16,118 +16,22 @@ from typing import Any, Literal
 import mne
 import numpy as np
 
+from ._channels import _unit_scale
+from ._paths import _subject_from_filename
+from ._round_trip import (
+    _check_memory_round_trip,
+    _max_abs_error,
+    _mne_psd_is_finite,
+    _raw_values_match,
+    _serialized_round_trip,
+)
+from ._verification_report import DatasetVerification as DatasetVerification
+from ._verification_report import SubjectVerification as SubjectVerification
 from .exceptions import CNDValidationError
-from .io import read_cnd, write_cnd
-from .mne import _unit_scale, to_mne
+from .io import read_cnd
+from .mne import MNECNDRecording, to_mne
 from .model import CNDRecording
-from .validation import ValidationIssue, validate_cnd
-
-
-@dataclass(slots=True, frozen=True)
-class SubjectVerification:
-    """Result for one subject file."""
-
-    subject: str
-    outcome: str
-    neural_file: str
-    stimulus_file: str | None
-    n_trials: int
-    n_channels: int
-    n_neural_samples: int
-    neural_sfreq: float
-    stimulus_sfreq: float | None
-    n_stimulus_features: int
-    warning_counts: dict[str, int]
-    validation_errors: tuple[dict[str, str], ...]
-    max_duration_difference_seconds: float | None
-    mne_created: bool
-    mne_shape_verified: bool
-    mne_max_abs_error_source_units: float | None
-    stimulus_mne_views_verified: bool | None
-    external_mne_views_verified: bool | None
-    mne_psd_finite: bool | None
-    round_trip_verified: bool
-    round_trip_max_abs_error_source_units: float | None
-    cnd_metadata_preserved: bool | None
-    serialized_round_trip_verified: bool | None
-    serialized_round_trip_max_abs_error_source_units: float | None
-    conversion_warnings: tuple[str, ...]
-    failure: str | None
-    elapsed_seconds: float
-
-
-@dataclass(slots=True, frozen=True)
-class DatasetVerification:
-    """Report for a whole CND dataset."""
-
-    schema_version: int
-    dataset_name: str
-    dataset_path: str
-    generated_at_utc: str
-    versions: dict[str, str]
-    neural_unit_assumption: str | None
-    strict_spec: bool
-    round_trip_requested: bool
-    serialized_round_trip_requested: bool
-    serialized_mat_version: str | None
-    mne_smoke_test_requested: bool
-    skipped_empty_files: tuple[str, ...]
-    subjects: tuple[SubjectVerification, ...]
-
-    @property
-    def passed(self) -> bool:
-        """True if no file failed to open or convert.
-
-        Empty-but-valid files count as a pass here (``empty_neural_data``).
-        """
-        return all(
-            subject.outcome in {"complete_pass", "structural_pass", "empty_neural_data"}
-            for subject in self.subjects
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """JSON report with totals."""
-        result = asdict(self)
-        warning_counts = Counter(
-            {
-                code: sum(
-                    subject.warning_counts.get(code, 0) for subject in self.subjects
-                )
-                for code in {
-                    code for subject in self.subjects for code in subject.warning_counts
-                }
-            }
-        )
-        max_mne_error = _optional_max(
-            subject.mne_max_abs_error_source_units for subject in self.subjects
-        )
-        max_round_trip_error = _optional_max(
-            subject.round_trip_max_abs_error_source_units for subject in self.subjects
-        )
-        outcome_counts = Counter(subject.outcome for subject in self.subjects)
-        result["summary"] = {
-            "passed": self.passed,
-            "n_discovered_subject_files": len(self.subjects)
-            + len(self.skipped_empty_files),
-            "n_skipped_empty_files": len(self.skipped_empty_files),
-            "n_subjects": len(self.subjects),
-            "n_failed_subjects": sum(
-                count
-                for outcome, count in outcome_counts.items()
-                if outcome
-                not in {"complete_pass", "structural_pass", "empty_neural_data"}
-            ),
-            "n_empty_neural_files": outcome_counts["empty_neural_data"],
-            "outcome_counts": dict(sorted(outcome_counts.items())),
-            "n_trials": sum(subject.n_trials for subject in self.subjects),
-            "n_neural_samples": sum(
-                subject.n_neural_samples for subject in self.subjects
-            ),
-            "warning_counts": dict(sorted(warning_counts.items())),
-            "max_mne_abs_error_source_units": max_mne_error,
-            "max_round_trip_abs_error_source_units": max_round_trip_error,
-        }
-        return result
+from .validation import ValidationIssue, ValidationReport, validate_cnd
 
 
 def verify_dataset(
@@ -236,378 +140,69 @@ def _verify_subject(
     started = time.monotonic()
     subject = _subject_label(neural_file)
     stage = "read"
-    empty: dict[str, Any] = {
-        "subject": subject,
-        "outcome": "source_read_failure",
-        "neural_file": neural_file.name,
-        "stimulus_file": None,
-        "n_trials": 0,
-        "n_channels": 0,
-        "n_neural_samples": 0,
-        "neural_sfreq": 0.0,
-        "stimulus_sfreq": None,
-        "n_stimulus_features": 0,
-        "warning_counts": {},
-        "validation_errors": (),
-        "max_duration_difference_seconds": None,
-        "mne_created": False,
-        "mne_shape_verified": False,
-        "mne_max_abs_error_source_units": None,
-        "stimulus_mne_views_verified": None,
-        "external_mne_views_verified": None,
-        "mne_psd_finite": None,
-        "round_trip_verified": False,
-        "round_trip_max_abs_error_source_units": None,
-        "cnd_metadata_preserved": None,
-        "serialized_round_trip_verified": None,
-        "serialized_round_trip_max_abs_error_source_units": None,
-        "conversion_warnings": (),
-        "failure": None,
-    }
+    result = asdict(
+        SubjectVerification(
+            subject=subject, outcome="source_read_failure", neural_file=neural_file.name
+        )
+    )
+    del result["elapsed_seconds"]  # Set once the check finishes.
     try:
         recording = read_cnd(neural_file)
         stage = "validate"
         report = validate_cnd(recording, strict_spec=strict_spec)
         neural = recording.neural
-        stimulus = recording.stimulus
         if neural is None:
             raise CNDValidationError("Subject file did not produce neural data")
-        empty.update(
-            {
-                "stimulus_file": (
-                    stimulus.source_path.name
-                    if stimulus is not None and stimulus.source_path is not None
-                    else None
-                ),
-                "n_trials": neural.n_trials,
-                "n_channels": neural.n_channels,
-                "n_neural_samples": sum(
-                    np.asarray(trial).shape[0] for trial in neural.trials
-                ),
-                "neural_sfreq": neural.sfreq,
-                "stimulus_sfreq": stimulus.sfreq if stimulus is not None else None,
-                "n_stimulus_features": (
-                    stimulus.n_features if stimulus is not None else 0
-                ),
-                "warning_counts": dict(
-                    sorted(Counter(issue.code for issue in report.warnings).items())
-                ),
-                "validation_errors": tuple(
-                    _issue_dict(issue) for issue in report.errors
-                ),
-                "max_duration_difference_seconds": _max_duration_difference(recording),
-            }
-        )
+        result.update(_structural_results(recording, report))
         if report.errors:
-            empty["outcome"] = "validation_failure"
+            result["outcome"] = "validation_failure"
             return SubjectVerification(
-                **empty, elapsed_seconds=round(time.monotonic() - started, 6)
+                **result, elapsed_seconds=round(time.monotonic() - started, 6)
             )
         if neural_unit is None:
-            empty["outcome"] = (
+            result["outcome"] = (
                 "empty_neural_data"
-                if empty["n_neural_samples"] == 0
+                if result["n_neural_samples"] == 0
                 else "structural_pass"
             )
             return SubjectVerification(
-                **empty, elapsed_seconds=round(time.monotonic() - started, 6)
+                **result, elapsed_seconds=round(time.monotonic() - started, 6)
             )
 
         stage = "convert"
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             converted = to_mne(recording, neural_unit=neural_unit)
-        scale = _unit_scale(neural_unit, neural.data_type.strip().lower())
-        shape_verified = True
-        mne_error = 0.0
-        for source_trial, raw in zip(neural.trials, converted.raws, strict=True):
-            expected = np.asarray(source_trial)
-            actual_source_units = raw.get_data().T / scale
-            shape_verified &= actual_source_units.shape == expected.shape
-            if actual_source_units.shape == expected.shape:
-                mne_error = max(
-                    mne_error, _max_abs_error(expected, actual_source_units)
-                )
-
-        psd_finite = None
-        if mne_smoke_test:
-            nonempty = next((raw for raw in converted.raws if raw.n_times), None)
-            psd_finite = _mne_psd_is_finite(nonempty) if nonempty is not None else False
-
-        stimulus_views_verified = None
-        if stimulus is not None:
-            stimulus_views_verified = True
-            for feature_index, feature_trials in enumerate(stimulus.features):
-                stimulus_raws = converted.stimulus_raws(feature_index)
-                stimulus_views_verified &= len(stimulus_raws) == len(feature_trials)
-                for source_trial, raw in zip(
-                    feature_trials, stimulus_raws, strict=True
-                ):
-                    expected = np.asarray(source_trial)
-                    if expected.ndim == 1:
-                        expected = expected[:, np.newaxis]
-                    stimulus_views_verified &= raw.get_data().shape == expected.T.shape
-                    if raw.get_data().shape == expected.T.shape:
-                        stimulus_views_verified &= np.array_equal(
-                            raw.get_data(), expected.T
-                        )
-
-        external_views_verified = None
-        if neural.external_trials is not None:
-            # Identity scaling and ``misc`` channel types exercise the adapter
-            # without making an unsupported claim about the external signals'
-            # physical units or physiological meaning.
-            external_views_verified = True
-            external_raws = converted.external_raws(unit="V", channel_types="misc")
-            external_views_verified &= len(external_raws) == len(neural.external_trials)
-            for source_trial, raw in zip(
-                neural.external_trials, external_raws, strict=True
-            ):
-                expected = np.asarray(source_trial)
-                external_views_verified &= raw.get_data().shape == expected.T.shape
-                if raw.get_data().shape == expected.T.shape:
-                    external_views_verified &= np.array_equal(
-                        raw.get_data(), expected.T
-                    )
-
-        round_trip_verified = False
-        round_trip_error = None
-        metadata_preserved = None
-        serialized_verified = None
-        serialized_error = None
-        if round_trip:
-            converted_back = converted.to_cnd(on_unsupported_metadata="raise")
-            if converted_back.neural is None:
-                raise CNDValidationError("MNE round trip lost neural data")
-            round_trip_error = max(
-                _max_abs_error(before, after)
-                for before, after in zip(
-                    neural.trials, converted_back.neural.trials, strict=True
-                )
-            )
-            metadata_preserved = (
-                converted_back.stimulus is recording.stimulus
-                and _metadata_equal(
-                    converted_back.additional_variables,
-                    recording.additional_variables,
-                )
-                and converted_back.neural.extra_fields is neural.extra_fields
-                and converted_back.neural.external_fields is neural.external_fields
-                and converted_back.neural.channel_locations is neural.channel_locations
-                and converted_back.neural.channel_locations_raw
-                is neural.channel_locations_raw
-                and converted_back.neural.original_trial_positions
-                == neural.original_trial_positions
-                and converted_back.neural.external_layout == neural.external_layout
-                and converted_back.neural.external_group_names
-                == neural.external_group_names
-                and converted_back.neural.external_group_channel_counts
-                == neural.external_group_channel_counts
-                and converted_back.neural.external_group_fields
-                is neural.external_group_fields
-            )
-            numerically_equivalent = all(
-                np.allclose(before, after, rtol=1e-12, atol=1e-12)
-                for before, after in zip(
-                    neural.trials, converted_back.neural.trials, strict=True
-                )
-            )
-            round_trip_verified = numerically_equivalent and metadata_preserved
-            if serialized_round_trip:
-                serialized_verified, serialized_error = _serialized_round_trip(
-                    converted_back,
-                    mat_version=serialized_mat_version,
-                )
-
-        empty.update(
-            {
-                "mne_created": True,
-                "mne_shape_verified": shape_verified,
-                "mne_max_abs_error_source_units": mne_error,
-                "stimulus_mne_views_verified": stimulus_views_verified,
-                "external_mne_views_verified": external_views_verified,
-                "mne_psd_finite": psd_finite,
-                "round_trip_verified": round_trip_verified,
-                "round_trip_max_abs_error_source_units": round_trip_error,
-                "cnd_metadata_preserved": metadata_preserved,
-                "serialized_round_trip_verified": serialized_verified,
-                "serialized_round_trip_max_abs_error_source_units": (serialized_error),
-                "conversion_warnings": tuple(str(item.message) for item in caught),
-            }
+        checks, passed = _conversion_results(
+            recording,
+            converted,
+            neural_unit,
+            round_trip,
+            serialized_round_trip,
+            serialized_mat_version,
+            mne_smoke_test,
         )
-        if empty["n_neural_samples"] == 0:
-            empty["outcome"] = "empty_neural_data"
-        elif (
-            shape_verified
-            and stimulus_views_verified is not False
-            and external_views_verified is not False
-            and (not round_trip or round_trip_verified)
-            and (not serialized_round_trip or serialized_verified is True)
-            and (not mne_smoke_test or psd_finite is True)
-        ):
-            empty["outcome"] = "complete_pass"
+        checks["conversion_warnings"] = tuple(str(item.message) for item in caught)
+        result.update(checks)
+        if result["n_neural_samples"] == 0:
+            result["outcome"] = "empty_neural_data"
+        elif passed:
+            result["outcome"] = "complete_pass"
         else:
-            empty["outcome"] = "verification_failure"
+            result["outcome"] = "verification_failure"
     except Exception as error:  # report each subject without aborting the matrix
-        empty["failure"] = _safe_failure_message(error, neural_file)
+        result["failure"] = _safe_failure_message(error, neural_file)
         if stage == "read" and isinstance(error, CNDValidationError):
-            empty["outcome"] = "validation_failure"
+            result["outcome"] = "validation_failure"
         else:
-            empty["outcome"] = {
+            result["outcome"] = {
                 "read": "source_read_failure",
                 "validate": "validation_failure",
                 "convert": "conversion_failure",
             }[stage]
     return SubjectVerification(
-        **empty, elapsed_seconds=round(time.monotonic() - started, 6)
+        **result, elapsed_seconds=round(time.monotonic() - started, 6)
     )
-
-
-def _mne_psd_is_finite(raw: mne.io.BaseRaw) -> bool:
-    duration = min(10.0, raw.times[-1])
-    segment = raw.copy().crop(tmin=0.0, tmax=duration).pick([0])
-    n_fft = min(1024, segment.n_times)
-    if n_fft < 2:
-        return False
-    nyquist = float(segment.info["sfreq"]) / 2
-    spectrum = segment.compute_psd(
-        method="welch",
-        fmin=0.0,
-        fmax=nyquist,
-        n_fft=n_fft,
-        verbose="ERROR",
-    )
-    return bool(np.isfinite(spectrum.get_data()).all())
-
-
-def _serialized_round_trip(
-    recording: CNDRecording, *, mat_version: Literal["5", "7.3"]
-) -> tuple[bool, float]:
-    """Exercise the real MATLAB writer and reader in an isolated directory."""
-    with tempfile.TemporaryDirectory(prefix="cnd-mne-verify-") as temporary:
-        destination = Path(temporary) / "dataCND"
-        write_cnd(recording, destination, mat_version=mat_version)
-        reloaded = read_cnd(
-            destination, subject=1 if recording.neural is not None else None
-        )
-
-    expected_neural = recording.neural
-    actual_neural = reloaded.neural
-    if expected_neural is None or actual_neural is None:
-        return expected_neural is actual_neural, 0.0
-    if len(expected_neural.trials) != len(actual_neural.trials):
-        return False, float("inf")
-    errors = [
-        _max_abs_error(expected, actual)
-        for expected, actual in zip(
-            expected_neural.trials, actual_neural.trials, strict=True
-        )
-    ]
-    neural_equal = all(
-        np.asarray(expected).shape == np.asarray(actual).shape
-        and np.allclose(expected, actual, rtol=1e-12, atol=1e-12)
-        for expected, actual in zip(
-            expected_neural.trials, actual_neural.trials, strict=True
-        )
-    )
-    stimulus_equal = _stimulus_values_equal(recording, reloaded)
-    external_equal = _optional_trial_values_equal(
-        expected_neural.external_trials, actual_neural.external_trials
-    )
-    essentials_equal = (
-        actual_neural.sfreq == expected_neural.sfreq
-        and actual_neural.data_type == expected_neural.data_type
-        and actual_neural.device_name == expected_neural.device_name
-        and actual_neural.data_unit == expected_neural.data_unit
-        and actual_neural.original_trial_positions
-        == expected_neural.original_trial_positions
-        and actual_neural.channel_names == expected_neural.channel_names
-        and _metadata_equal(actual_neural.rereference, expected_neural.rereference)
-        and _metadata_equal(
-            actual_neural.padding_start_sample,
-            expected_neural.padding_start_sample,
-        )
-        and actual_neural.cnd_version == expected_neural.cnd_version
-        and actual_neural.external_layout == expected_neural.external_layout
-        and actual_neural.external_group_names == expected_neural.external_group_names
-        and actual_neural.external_group_channel_counts
-        == expected_neural.external_group_channel_counts
-        and _metadata_equal(
-            actual_neural.external_group_fields,
-            expected_neural.external_group_fields,
-        )
-        and _metadata_equal(
-            reloaded.additional_variables,
-            recording.additional_variables,
-        )
-    )
-    return (
-        neural_equal and stimulus_equal and external_equal and essentials_equal,
-        max(errors, default=0.0),
-    )
-
-
-def _stimulus_values_equal(expected: CNDRecording, actual: CNDRecording) -> bool:
-    expected_stimulus = expected.stimulus
-    actual_stimulus = actual.stimulus
-    if expected_stimulus is None or actual_stimulus is None:
-        return expected_stimulus is actual_stimulus
-    if (
-        expected_stimulus.names != actual_stimulus.names
-        or expected_stimulus.sfreq != actual_stimulus.sfreq
-        or expected_stimulus.stimulus_indices != actual_stimulus.stimulus_indices
-        or expected_stimulus.condition_indices != actual_stimulus.condition_indices
-        or expected_stimulus.condition_names != actual_stimulus.condition_names
-        or expected_stimulus.cnd_version != actual_stimulus.cnd_version
-        or len(expected_stimulus.features) != len(actual_stimulus.features)
-    ):
-        return False
-    return all(
-        np.asarray(before).shape == np.asarray(after).shape
-        and np.array_equal(before, after)
-        for before_feature, after_feature in zip(
-            expected_stimulus.features, actual_stimulus.features, strict=True
-        )
-        for before, after in zip(before_feature, after_feature, strict=True)
-    )
-
-
-def _optional_trial_values_equal(
-    expected: tuple[np.ndarray, ...] | None,
-    actual: tuple[np.ndarray, ...] | None,
-) -> bool:
-    if expected is None or actual is None:
-        return expected is actual
-    return len(expected) == len(actual) and all(
-        np.asarray(before).shape == np.asarray(after).shape
-        and np.array_equal(before, after)
-        for before, after in zip(expected, actual, strict=True)
-    )
-
-
-def _metadata_equal(expected: Any, actual: Any) -> bool:
-    if expected is None or actual is None:
-        return expected is actual
-    if isinstance(expected, dict) or isinstance(actual, dict):
-        if not isinstance(expected, dict) or not isinstance(actual, dict):
-            return False
-        return expected.keys() == actual.keys() and all(
-            _metadata_equal(expected[key], actual[key]) for key in expected
-        )
-    if isinstance(expected, (list, tuple)) or isinstance(actual, (list, tuple)):
-        if not isinstance(expected, (list, tuple)) or not isinstance(
-            actual, (list, tuple)
-        ):
-            return False
-        return len(expected) == len(actual) and all(
-            _metadata_equal(before, after)
-            for before, after in zip(expected, actual, strict=True)
-        )
-    try:
-        result = expected == actual
-    except (TypeError, ValueError):
-        return False
-    return bool(np.all(result))
 
 
 def _max_duration_difference(recording: CNDRecording) -> float | None:
@@ -620,13 +215,6 @@ def _max_duration_difference(recording: CNDRecording) -> float | None:
     return max(differences) if differences else None
 
 
-def _max_abs_error(expected: Any, actual: Any) -> float:
-    difference = np.abs(
-        np.asarray(expected, dtype=np.float64) - np.asarray(actual, dtype=np.float64)
-    )
-    return float(np.max(difference, initial=0.0))
-
-
 def _issue_dict(issue: ValidationIssue) -> dict[str, str]:
     return {"code": issue.code, "path": issue.path, "message": issue.message}
 
@@ -637,14 +225,8 @@ def _subject_sort_key(path: Path) -> tuple[int, str]:
 
 
 def _subject_label(path: Path) -> str:
-    stem = path.stem
-    if stem.startswith("dataSub"):
-        return stem.removeprefix("dataSub")
-    if stem.startswith("pre_dataSub"):
-        return stem.removeprefix("pre_dataSub")
-    if stem.startswith("dataParticipant_"):
-        return stem.removeprefix("dataParticipant_")
-    return stem
+    label = _subject_from_filename(path)
+    return path.stem if label is None else label
 
 
 def _safe_failure_message(error: Exception, neural_file: Path) -> str:
@@ -655,13 +237,118 @@ def _safe_failure_message(error: Exception, neural_file: Path) -> str:
     return f"{type(error).__name__}: {message}"
 
 
-def _optional_max(values: Any) -> float | None:
-    present = [value for value in values if value is not None]
-    return max(present) if present else None
-
-
 def _package_version() -> str:
     try:
         return version("cnd-mne-converter")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _structural_results(
+    recording: CNDRecording, report: ValidationReport
+) -> dict[str, Any]:
+    """Describe the source and its validation issues before conversion."""
+    neural, stimulus = recording.neural, recording.stimulus
+    if neural is None:
+        raise CNDValidationError("Subject file did not produce neural data")
+    return {
+        "stimulus_file": (
+            stimulus.source_path.name
+            if stimulus is not None and stimulus.source_path is not None
+            else None
+        ),
+        "n_trials": neural.n_trials,
+        "n_channels": neural.n_channels,
+        "n_neural_samples": sum(np.asarray(trial).shape[0] for trial in neural.trials),
+        "neural_sfreq": neural.sfreq,
+        "stimulus_sfreq": stimulus.sfreq if stimulus is not None else None,
+        "n_stimulus_features": (stimulus.n_features if stimulus is not None else 0),
+        "warning_counts": dict(
+            sorted(Counter(issue.code for issue in report.warnings).items())
+        ),
+        "validation_errors": tuple(_issue_dict(issue) for issue in report.errors),
+        "max_duration_difference_seconds": _max_duration_difference(recording),
+    }
+
+
+def _conversion_results(
+    recording: CNDRecording,
+    converted: MNECNDRecording,
+    neural_unit: str,
+    round_trip: bool,
+    serialized_round_trip: bool,
+    serialized_mat_version: Literal["5", "7.3"],
+    mne_smoke_test: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Run requested checks and return their results together."""
+    neural, stimulus = recording.neural, recording.stimulus
+    if neural is None:
+        raise CNDValidationError("Subject file did not produce neural data")
+    scale = _unit_scale(neural_unit, neural.data_type.strip().lower())
+    shape_verified = True
+    mne_error = 0.0
+    for source_trial, raw in zip(neural.trials, converted.raws, strict=True):
+        expected = np.asarray(source_trial)
+        actual_source_units = raw.get_data().T / scale
+        shape_verified &= actual_source_units.shape == expected.shape
+        if actual_source_units.shape == expected.shape:
+            mne_error = max(mne_error, _max_abs_error(expected, actual_source_units))
+
+    psd_finite = None
+    if mne_smoke_test:
+        nonempty = next((raw for raw in converted.raws if raw.n_times), None)
+        psd_finite = _mne_psd_is_finite(nonempty) if nonempty is not None else False
+
+    stimulus_views_verified = None
+    if stimulus is not None:
+        stimulus_views_verified = all(
+            _raw_values_match(trials, converted.stimulus_raws(index))
+            for index, trials in enumerate(stimulus.features)
+        )
+    external_views_verified = None
+    if neural.external_trials is not None:
+        # Identity scaling tests values without claiming physiological units.
+        external_views_verified = _raw_values_match(
+            neural.external_trials,
+            converted.external_raws(unit="V", channel_types="misc"),
+        )
+
+    round_trip_verified = False
+    round_trip_error = None
+    metadata_preserved = None
+    serialized_verified = None
+    serialized_error = None
+    if round_trip:
+        (
+            converted_back,
+            round_trip_error,
+            metadata_preserved,
+            round_trip_verified,
+        ) = _check_memory_round_trip(recording, converted)
+        if serialized_round_trip:
+            serialized_verified, serialized_error = _serialized_round_trip(
+                converted_back,
+                mat_version=serialized_mat_version,
+            )
+
+    return (
+        {
+            "mne_created": True,
+            "mne_shape_verified": shape_verified,
+            "mne_max_abs_error_source_units": mne_error,
+            "stimulus_mne_views_verified": stimulus_views_verified,
+            "external_mne_views_verified": external_views_verified,
+            "mne_psd_finite": psd_finite,
+            "round_trip_verified": round_trip_verified,
+            "round_trip_max_abs_error_source_units": round_trip_error,
+            "cnd_metadata_preserved": metadata_preserved,
+            "serialized_round_trip_verified": serialized_verified,
+            "serialized_round_trip_max_abs_error_source_units": (serialized_error),
+        },
+        shape_verified
+        and stimulus_views_verified is not False
+        and external_views_verified is not False
+        and (not round_trip or round_trip_verified)
+        and (not serialized_round_trip or serialized_verified is True)
+        and (not mne_smoke_test or psd_finite is True),
+    )

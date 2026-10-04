@@ -24,3 +24,6 @@ data/
 *.zip
 !tests/data/
 !tests/data/**/*.mat
+
+outputs/
+.mypy_cache/

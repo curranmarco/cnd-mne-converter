@@ -1,26 +1,26 @@
-# CND-to-MNE desktop GUI
-
-The GUI opens a CND recording and passes each neural trial to MNE-Python. It is
-a companion window supplied by this package, not an upstream MNE or MNELAB
-plugin.
-
-## Import button inside MNE's Qt viewer (prototype)
-
-The package can now add **Open CND…** directly to an MNE Qt browser window.
-It opens an import dialog with explicit unit and coordinate-scale controls.
-Successful imports open a new normal MNE viewer; the existing recording and its
-edits remain in the original viewer. Trials remain separate Raw objects.
-Reopen the dialog to select another trial and click **MNE data viewer** to view it.
-
-The companion window adds this toolbar automatically when you click **MNE data
-viewer**. To start directly in the viewer using the bundled synthetic example:
+# Desktop viewer
 
 ```bash
 uv sync --locked --extra gui
-uv run --extra gui python examples/mne_import_button.py
+uv run cnd-mne gui
 ```
 
-For an existing MNE Raw object, enable the extension explicitly:
+Select a CND file or folder. Choose a subject for folders with multiple subject
+files. Enter the confirmed neural unit if the file lacks one, then **Open CND**.
+
+| Control | Purpose |
+| --- | --- |
+| Previous / Next trial | Switch recording segments |
+| MNE data viewer | Browse voltage traces over time |
+| Sensor layout | Show electrode names and positions |
+| Power spectrum | Show signal power by frequency; select a band for a scalp plot |
+| Apply EEGLAB coordinates | Use stored electrode positions |
+| Scale to metres | Convert coordinate values using a documented multiplier |
+
+A scalp plot interpolates sensor power; it does not locate brain sources.
+The amplitude warning flags unusually large values without choosing a unit.
+
+## Import from an existing MNE viewer
 
 ```python
 import mne
@@ -31,119 +31,38 @@ with mne.viz.use_browser_backend("qt"):
 importer = add_cnd_import_button(browser)
 ```
 
-In a plain Python script, keep the Qt event loop running (see the standalone
-example). QtPy uses the active Qt binding; the `gui` extra supplies PySide6.
-The Matplotlib browser is not supported by this toolbar.
+This opt-in Qt toolbar prototype opens imports in a new viewer. It is supplied
+by this package, not upstream MNE. Keep the Qt event loop running in scripts:
+[standalone example](../examples/mne_import_button.py).
 
-This is an opt-in prototype implemented with Qt's public window/toolbar API.
-It does not patch MNE's source, register a global reader, or change unrelated
-viewer windows. MNE does not supply this CND button: it is added by our package
-to the viewer instance. It is not an official MNE plugin interface or accepted
-upstream integration. This is the working example to review with collaborators
-before proposing a supported integration to the MNE team.
+Imported viewers retain `browser.cnd_recording` and `browser.cnd_trial_index`.
+Saving still requires the Python export API.
 
-Viewers opened by our importer retain the CND wrapper on `browser.cnd_recording`
-and the selected trial on `browser.cnd_trial_index`; the import button itself
-does not automatically save edits or overwrite CND files.
+## Recorded checks
 
-The prototype was tested with MNE 1.12.1, mne-qt-browser 0.7.5 and PySide6
-6.11.2. The real Lalor sample (128 channels, 20 trials) passed import from the
-toolbar, with exact trial-data equality and the original viewer's data unchanged.
-[Screenshots and the numerical audit](results/browser-import/) are included.
-These screenshots and checks used offscreen Qt; the automated tests also cover
-cancelled/failed imports, repeated button installation and variable-length trials.
-The three browser-import tests also passed against the built wheel in a fresh
-Python 3.13 environment with MNE 1.13.2 and mne-qt-browser 0.7.5.
-Reproduce the real-data check after downloading the walkthrough's Lalor fixture:
+Offscreen Qt tests cover import, cancellation, failure, repeated installation,
+and variable-length trials. [Browser audit](results/browser-import/audit.json)
+and [coordinate audit](results/giovanni-review/gui-audit.json) record real-data checks.
+
+The notebook's Lalor sample uses `uV` as a plotting assumption and `0.095` as a
+coordinate multiplier for a 95 mm display sphere. Neither establishes physical
+calibration. BioSemi template positions describe the cap, not individual anatomy.
+
+Reproduce after downloading the notebook fixture:
 
 ```bash
-QT_QPA_PLATFORM=offscreen MNE_BROWSER_PRECOMPUTE=false \
-  uv run --extra gui python examples/validate_browser_import.py \
+QT_QPA_PLATFORM=offscreen uv run --extra gui python examples/validate_browser_import.py \
   examples/_scratch/lalor-sample --neural-unit uV
+uv run --extra gui python examples/validate_gui.py --help
 ```
 
-The unit argument here is the existing demonstration assumption, not a verified
-source calibration. Run `uv run --extra dev --extra gui pytest
-tests/test_browser_import.py` for the bundled-fixture tests.
-
-## Install and launch
-
-From the repository root:
+For a manufacturer-coordinate comparison, supply both recordings and the workbook:
 
 ```bash
-uv sync --extra gui
-uv run cnd-mne gui
+uv run --with xlrd python examples/validate_coordinates.py \
+  --lalor /path/to/pre_dataSub1.mat --p3 /path/to/p3/dataCND \
+  --coordinates /path/to/Cap_coords_all.xls
 ```
 
-## Inputs
-
-- **CND path:** a CND dataset directory or a neural MATLAB file. When opening a
-  neural file directly, the corresponding `dataStim.mat` should be beside it.
-- **Subject:** selects one participant when a directory contains multiple
-  subject files. It can remain blank for a single-subject directory.
-- **Neural unit:** the unit of the numerical EEG samples. Leave it blank only
-  when the CND file declares a unit. MNE stores EEG internally in volts, so a
-  wrong selection changes the displayed amplitude. The GUI warns when the
-  resulting values are unusually large, but it does not guess a replacement.
-- **Apply EEGLAB channel coordinates:** converts the CND/EEGLAB channel-location
-  fields into an MNE montage.
-- **Scale to metres:** multiplier from the stored coordinate values to metres.
-  This must come from the dataset documentation; it cannot be inferred safely.
-
-Click **Open CND** after setting these fields. The status line reports an error,
-a unit warning, or the number of the selected trial.
-
-## Buttons
-
-- **Previous trial / Next trial:** select one variable-length CND trial. Each
-  trial is a separate MNE `Raw` object.
-- **MNE data viewer:** opens MNE's interactive signal browser with a readable
-  ten-second, twenty-channel initial view. The underlying data are unchanged.
-- **Sensor layout:** plots the channel names and positions. When the complete
-  channel-name set exactly matches a standard BioSemi 16, 32, 64, 128, 160, or 256
-  montage and the CND declares a BioSemi device, the converter applies MNE's
-  corresponding native-to-head transform and fiducials while preserving the
-  CND electrode directions. The original CND structure remains attached and
-  unchanged.
-- **Power spectrum:** plots power against frequency. Drag across a frequency
-  range to display an MNE scalp topography for that band. The colours show
-  interpolated sensor power, not brain anatomy or source-localised activity.
-  Recognised BioSemi data use the same display transform as **Sensor layout**.
-  The topography fits its schematic outline around the full projected montage.
-  Without this display adjustment, MNE retains a conventional head circle but
-  expands the interpolation area for BioSemi electrodes below the ear/nasion
-  plane, which can make valid lower-cap positions look as though they are
-  outside the head.
-
-## Real Lalor Natural Speech example
-
-Use the locally downloaded sample with:
-
-| Field | Value |
-| --- | --- |
-| CND path | `examples/_scratch/lalor-sample` |
-| Subject | blank |
-| Neural unit | `uV` |
-| Apply EEGLAB channel coordinates | selected |
-| Scale to metres | `0.095` |
-
-This recording contains 128 BioSemi channels and 20 variable-length trials.
-The `uV` setting is a documented plotting assumption because the source file
-does not declare its physical unit.
-
-## Coordinate limits
-
-The Lalor CND coordinate directions agree with the BioSemi factory layout to
-within `0.000349°` in the repository validation. For the GUI, the converter
-preserves those CND directions and applies the native-to-head transform from
-MNE's BioSemi fiducials; the maximum numerical directional change in the audit
-is below `0.00004°`. The power topography enlarges its schematic outline to
-contain the full projected cap; this affects only the plot, not the coordinates
-or EEG values. These are manufacturer template positions rather than digitised
-locations measured from the individual participant, so they should not be
-treated as subject-specific anatomy.
-
-The reproducible audit is in
-[`examples/validate_gui.py`](../examples/validate_gui.py), with its latest JSON
-output in
-[`docs/results/giovanni-review/gui-audit.json`](results/giovanni-review/gui-audit.json).
+The workbook source is recorded in [the historical audit](results/giovanni-review/results.json).
+New audits and plots go to local `outputs/`.

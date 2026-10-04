@@ -28,7 +28,7 @@ parser.add_argument(
 parser.add_argument(
     "--output",
     type=Path,
-    default=Path("docs/results/giovanni-review/gui-audit.json"),
+    default=Path("outputs/gui-audit.json"),
 )
 args = parser.parse_args()
 dataset = args.dataset.resolve()

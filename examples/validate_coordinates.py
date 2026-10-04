@@ -20,15 +20,22 @@ import xlrd
 from cnd_mne import read_cnd, to_mne
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--root", type=Path, required=True)
-root = parser.parse_args().root.resolve()
-out = root / "cnd-mne-converter/docs/results/giovanni-review"
+parser.add_argument("--lalor", type=Path, required=True, help="Lalor neural MAT file")
+parser.add_argument(
+    "--p3", type=Path, required=True, help="Converted P3 dataCND folder"
+)
+parser.add_argument(
+    "--coordinates", type=Path, required=True, help="BioSemi Cap_coords_all.xls"
+)
+parser.add_argument("--output-dir", type=Path, default=Path("outputs/coordinate-check"))
+args = parser.parse_args()
+out = args.output_dir
 out.mkdir(parents=True, exist_ok=True)
-r = read_cnd(root / "tmp/cnd/lalor-pilot/pre_dataSub1.mat")
+r = read_cnd(args.lalor)
 raw = to_mne(
     r, neural_unit="uV", montage="eeglab", coordinate_scale_to_meters=0.095
 ).raws[0]
-workbook_path = root / "tmp/Cap_coords_all.xls"
+workbook_path = args.coordinates
 sheet = xlrd.open_workbook(workbook_path).sheet_by_name("128-chan")
 factory_positions = {}
 for row in range(sheet.nrows):
@@ -56,7 +63,7 @@ axes[0].set_title("Lalor CND → MNE: channel names preserved")
 axes[1].set_title("BioSemi manufacturer 128-channel coordinates")
 fig.savefig(out / "biosemi128-layout.png", dpi=150)
 plt.close(fig)
-p3 = root / "tmp/giovanni-validation/sub-001_task-P3/dataCND"
+p3 = args.p3
 r = read_cnd(p3 / "dataSub1.mat", stimulus_path=p3 / "dataStim.mat")
 raw = to_mne(r, neural_unit="V", montage="eeglab", coordinate_scale_to_meters=1).raws[0]
 fig = raw.plot_sensors(show_names=True, show=False)

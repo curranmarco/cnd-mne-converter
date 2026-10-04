@@ -68,7 +68,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 # The Qt window is an optional platform UI; measure the scientific converter core.
-omit = ["src/cnd_mne/gui.py"]
+omit = ["*/cnd_mne/gui.py"]
 
 [tool.ruff]
 line-length = 88

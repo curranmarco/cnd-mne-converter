@@ -12,7 +12,7 @@ from .io import read_cnd
 from .verification import verify_dataset
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cnd-mne")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -74,7 +74,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--output", type=Path, help="write the JSON report to this file"
     )
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.command == "gui":
         from .gui import launch_gui
 
