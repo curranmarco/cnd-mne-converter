@@ -52,6 +52,12 @@ dev = [
   "pytest>=8",
   "pytest-cov>=5",
   "ruff>=0.9",
+  "mne-bids>=0.16",
+  "pybv>=0.7.5",
+]
+bids = [
+    "mne-bids>=0.16",
+    "pybv>=0.7.5",
 ]
 gui = [
     "mne-qt-browser>=0.6",
