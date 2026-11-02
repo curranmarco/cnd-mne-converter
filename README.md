@@ -58,6 +58,7 @@ uv run cnd-mne gui
 ## More
 
 - [Usage and field mapping](docs/field-mapping.md): stimuli, auxiliary channels, export.
+- [BIDS export and import](docs/bids.md): CND → MNE → BIDS and back, with `--verify`.
 - [Notebook](examples/walkthrough.ipynb): bundled fixture, then an optional 120 MB download.
 - [Verification](docs/results/README.md): 1,026 public files; 1,017 passed, eight empty, one unreadable.
 - [Development](CONTRIBUTING.md): code map and checks.

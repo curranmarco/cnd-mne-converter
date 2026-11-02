@@ -4,6 +4,7 @@ Nothing is tagged as a real release yet. This is what is on `main`.
 
 ## Unreleased
 
+- BIDS export and import (`cnd_mne.bids`, `cnd-mne to-bids` / `from-bids`): CND → MNE → BIDS and back, with a round-trip check; optional `bids` extra
 - Read and write CND for EEG and the public-catalogue fNIRS layout
 - MATLAB v5 and v7.3
 - `read_cnd_mne()` and `write_cnd()`
