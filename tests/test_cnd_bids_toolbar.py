@@ -198,3 +198,34 @@ def test_untyped_channels_need_confirmation(qt_app, tmp_path, monkeypatch) -> No
         lambda *a: QtWidgets.QMessageBox.StandardButton.No,
     )
     assert plain._confirm_eeg() is None
+
+
+def test_save_bids_dialog_uses_eeg_confirmation(qt_app, tmp_path, monkeypatch) -> None:
+    source = _native_bids(tmp_path / "original")
+    channels = source.with_name(source.name.replace("_eeg.vhdr", "_channels.tsv"))
+    channels.write_text(channels.read_text().replace("\tEEG\t", "\tn/a\t"))
+    toolbar, _ = _cnd_viewer()
+    plain = toolbar.open_bids(source)._cnd_bids_toolbar
+    assert plain.needs_eeg_confirmation()
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog, "getExistingDirectory", lambda *a, **k: str(out)
+    )
+    texts = iter(["01", "rest"])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog, "getText", lambda *a, **k: (next(texts), True)
+    )
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", lambda *a, **k: ("50", True))
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *a: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a: None)
+    errors = []
+    monkeypatch.setattr(plain, "_error", errors.append)
+    plain._ask_save_bids()
+    assert not errors, errors
+    with (out / "sub-01" / "eeg" / "sub-01_task-rest_channels.tsv").open() as handle:
+        types = {row["type"] for row in csv.DictReader(handle, delimiter="\t")}
+    assert types == {"EEG"}
