@@ -568,3 +568,243 @@ def compare_cnd(original: CNDRecording, restored: CNDRecording) -> dict[str, Any
         value for key, value in checks.items() if isinstance(value, bool)
     )
     return checks
+
+
+# ---------------------------------------------------------------------------
+# BIDS -> CND -> BIDS: compare the original BIDS run with the final one
+# ---------------------------------------------------------------------------
+
+_METADATA_KEYS = (
+    "SamplingFrequency",
+    "PowerLineFrequency",
+    "EEGReference",
+    "EEGGround",
+    "EEGChannelCount",
+    "Manufacturer",
+    "ManufacturersModelName",
+    "SoftwareFilters",
+)
+
+
+def compare_bids(
+    original_root: str | Path,
+    final_root: str | Path,
+    *,
+    subject: str,
+    task: str,
+    final_subject: str | None = None,
+    final_task: str | None = None,
+    session: str | None = None,
+    run: str | None = None,
+    event_map: dict[str, tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Compare an original BIDS EEG run with the BIDS written after CND.
+
+    Checks, in order of importance:
+
+    * ``eeg``: same channels (by name), sampling rate, number of samples and
+      values. Values are compared in volts with a relative tolerance of 1e-6,
+      since BrainVision and EEGLAB both store 32-bit floats.
+    * ``events``: for each feature in ``event_map`` (final ``trial_type`` ->
+      original ``(column, value)``, e.g. from a pipeline recipe), the same
+      number of events at the same times, within half a sample.
+    * ``metadata``: sidecar fields and channel types/units that differ. These
+      are reported, not failed: CND has no place for most of them.
+
+    ``passed`` is true when the EEG and every mapped event set match.
+    """
+    mne_bids = _import_mne_bids()
+    original_path = _single_run(
+        mne_bids, original_root, subject, task, session, run, "original"
+    )
+    final_path = _single_run(
+        mne_bids,
+        final_root,
+        final_subject or subject,
+        final_task or task,
+        session,
+        None,
+        "final",
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        original = mne_bids.read_raw_bids(
+            original_path, extra_params={"preload": True}, verbose=False
+        )
+        final = mne_bids.read_raw_bids(
+            final_path, extra_params={"preload": True}, verbose=False
+        )
+
+    report: dict[str, Any] = {
+        "original": str(original_path.fpath),
+        "final": str(final_path.fpath),
+    }
+    shared = [name for name in final.ch_names if name in original.ch_names]
+    eeg: dict[str, Any] = {
+        "sampling_rate": float(original.info["sfreq"]) == float(final.info["sfreq"]),
+        "n_samples": [int(original.n_times), int(final.n_times)],
+        "same_length": bool(original.n_times == final.n_times),
+        "channels_only_in_original": sorted(set(original.ch_names) - set(shared)),
+        "channels_only_in_final": sorted(set(final.ch_names) - set(shared)),
+    }
+    worst = float("inf")
+    if eeg["same_length"] and shared:
+        a = original.get_data(picks=shared)
+        b = final.get_data(picks=shared)
+        scale = float(np.max(np.abs(a))) or 1.0
+        worst = float(np.max(np.abs(a - b))) / scale
+    eeg["max_relative_error"] = worst
+    eeg["values"] = worst <= 1e-6
+    eeg["passed"] = bool(
+        eeg["sampling_rate"]
+        and eeg["same_length"]
+        and eeg["values"]
+        and not eeg["channels_only_in_final"]
+    )
+    report["eeg"] = eeg
+
+    sfreq = float(original.info["sfreq"])
+    original_events = _read_tsv(_sibling(original_path, "events", ".tsv"))
+    final_events = _read_tsv(_sibling(final_path, "events", ".tsv"))
+    events: dict[str, Any] = {}
+    for name, (column, value) in (event_map or {}).items():
+        before = sorted(
+            float(row["onset"])
+            for row in original_events
+            if str(row.get(column, "")).strip() == value.strip()
+        )
+        after = sorted(
+            float(row["onset"]) for row in final_events if row.get("trial_type") == name
+        )
+        same_count = len(before) == len(after)
+        largest = (
+            float(np.max(np.abs(np.subtract(before, after))))
+            if same_count and before
+            else None
+        )
+        events[name] = {
+            "original_rule": f"{column} == {value!r}",
+            "n_original": len(before),
+            "n_final": len(after),
+            "max_onset_difference_s": largest,
+            "passed": bool(
+                same_count and (largest is None or largest <= 0.5 / sfreq + 1e-9)
+            ),
+        }
+    report["events"] = events
+
+    report["metadata"] = _metadata_differences(original_path, final_path)
+    report["passed"] = bool(
+        eeg["passed"] and all(item["passed"] for item in events.values())
+    )
+    return report
+
+
+def event_map_from_recipe(recipe_path: str | Path) -> dict[str, tuple[str, str]]:
+    """Read ``feature name -> (events.tsv column, value)`` from a pipeline recipe.
+
+    Only ``bids_event_impulse`` features carry such a rule; others are skipped.
+    """
+    recipe = json.loads(Path(recipe_path).read_text(encoding="utf-8"))
+    mapping: dict[str, tuple[str, str]] = {}
+    for feature in recipe.get("features", []):
+        if feature.get("kind") != "bids_event_impulse":
+            continue
+        values = feature.get("source_value", feature.get("source_values"))
+        if isinstance(values, list):
+            if len(values) != 1:
+                continue
+            values = values[0]
+        mapping[str(feature["name"])] = (
+            str(feature.get("source_column", "trial_type")),
+            str(values),
+        )
+    return mapping
+
+
+def _single_run(
+    mne_bids: Any,
+    root: str | Path,
+    subject: str,
+    task: str,
+    session: str | None,
+    run: str | None,
+    label: str,
+) -> Any:
+    matches = [
+        path
+        for path in mne_bids.BIDSPath(
+            root=Path(root).expanduser(),
+            subject=subject,
+            task=task,
+            session=session,
+            run=run,
+            datatype="eeg",
+            suffix="eeg",
+        ).match()
+        if path.extension in {".vhdr", ".set", ".edf", ".bdf", ".fif"}
+    ]
+    if len(matches) != 1:
+        found = [str(path.basename) for path in matches]
+        raise ValueError(
+            f"Expected one {label} EEG run for sub-{subject} task-{task}, "
+            f"found {found or 'none'}; pass run= to choose"
+        )
+    return matches[0]
+
+
+def _sibling(bids_path: Any, suffix: str, extension: str) -> Path:
+    return Path(
+        bids_path.copy().update(suffix=suffix, extension=extension, check=False).fpath
+    )
+
+
+def _read_tsv(path: Path) -> list[dict[str, str]]:
+    import csv
+
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def _metadata_differences(original_path: Any, final_path: Any) -> dict[str, Any]:
+    before = _read_json(_sibling(original_path, "eeg", ".json"))
+    after = _read_json(_sibling(final_path, "eeg", ".json"))
+    sidecar = {
+        key: {"original": before.get(key), "final": after.get(key)}
+        for key in _METADATA_KEYS
+        if key in before or key in after
+        if before.get(key) != after.get(key)
+    }
+    original_channels = {
+        row["name"]: row
+        for row in _read_tsv(_sibling(original_path, "channels", ".tsv"))
+    }
+    final_channels = {
+        row["name"]: row for row in _read_tsv(_sibling(final_path, "channels", ".tsv"))
+    }
+    channel_changes: dict[str, set[str]] = {}
+    for name, row in final_channels.items():
+        old = original_channels.get(name)
+        if old is None:
+            continue
+        for column in ("type", "units", "status"):
+            if column in old and old.get(column) != row.get(column):
+                channel_changes.setdefault(
+                    f"{column}: {old.get(column)} -> {row.get(column)}", set()
+                ).add(name)
+    original_electrodes = bool(
+        list(Path(original_path.directory).glob("*_electrodes.tsv"))
+    )
+    final_electrodes = bool(list(Path(final_path.directory).glob("*_electrodes.tsv")))
+    return {
+        "sidecar_fields_changed": sidecar,
+        "channel_columns_changed": {
+            change: len(names) for change, names in sorted(channel_changes.items())
+        },
+        "electrode_positions": {
+            "original": original_electrodes,
+            "final": final_electrodes,
+        },
+    }

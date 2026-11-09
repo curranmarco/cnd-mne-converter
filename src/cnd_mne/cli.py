@@ -111,6 +111,24 @@ def build_parser() -> argparse.ArgumentParser:
     from_bids.add_argument("--output-unit", help="default: unit of the original CND")
     from_bids.add_argument("--overwrite", action="store_true")
 
+    compare_bids = commands.add_parser(
+        "compare-bids",
+        help="compare an original BIDS EEG run with the BIDS written after CND",
+    )
+    compare_bids.add_argument("original_root", type=Path)
+    compare_bids.add_argument("final_root", type=Path)
+    compare_bids.add_argument("--subject", required=True, help="original subject")
+    compare_bids.add_argument("--task", required=True, help="original task")
+    compare_bids.add_argument("--final-subject", help="default: --subject")
+    compare_bids.add_argument("--final-task", help="default: --task")
+    compare_bids.add_argument("--session")
+    compare_bids.add_argument("--run", help="original run, if there are several")
+    compare_bids.add_argument(
+        "--recipe",
+        type=Path,
+        help="pipeline recipe used for BIDS -> CND; its event rules are checked",
+    )
+
     return parser
 
 
@@ -204,6 +222,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps({"neural": str(paths.neural), "stimulus": str(paths.stimulus)})
         )
         return 0
+    if args.command == "compare-bids":
+        from .bids import compare_bids, event_map_from_recipe
+
+        comparison = compare_bids(
+            args.original_root,
+            args.final_root,
+            subject=args.subject,
+            task=args.task,
+            final_subject=args.final_subject,
+            final_task=args.final_task,
+            session=args.session,
+            run=args.run,
+            event_map=event_map_from_recipe(args.recipe) if args.recipe else None,
+        )
+        print(json.dumps(comparison, indent=2, default=str))
+        return 0 if comparison["passed"] else 1
     return 2
 
 
