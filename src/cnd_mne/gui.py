@@ -707,6 +707,7 @@ class CNDBIDSToolbar:
                 line_freq=None if line == "not set" else float(line),
                 external_unit=external_unit,
                 overwrite=overwrite,
+                treat_misc_as_eeg=treat,
             ),
             f"Saved BIDS to {root}",
         )
