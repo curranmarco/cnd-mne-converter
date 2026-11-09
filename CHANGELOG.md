@@ -4,6 +4,8 @@ Nothing is tagged as a real release yet. This is what is on `main`.
 
 ## Unreleased
 
+- `cnd-mne compare-bids`: check BIDS -> CND -> BIDS against the original dataset
+- MNE viewer toolbar (`cnd-mne browse`, `add_cnd_bids_toolbar`): Open CND/BIDS, Save as CND/BIDS
 - BIDS export and import (`cnd_mne.bids`, `cnd-mne to-bids` / `from-bids`): CND → MNE → BIDS and back, with a round-trip check; optional `bids` extra
 - Read and write CND for EEG and the public-catalogue fNIRS layout
 - MATLAB v5 and v7.3
