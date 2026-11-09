@@ -17,6 +17,14 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("gui", help="open CND files in a small MNE desktop GUI")
+    browse = commands.add_parser(
+        "browse",
+        help="open CND or BIDS in the MNE viewer with Open/Save CND and BIDS",
+    )
+    browse.add_argument("path", help="CND folder/.mat, BIDS EEG file or BIDS folder")
+    browse.add_argument("--subject", help="CND subject, or BIDS subject label")
+    browse.add_argument("--task", help="BIDS task label")
+    browse.add_argument("--neural-unit", help="unit when the CND file has none")
 
     inspect_parser = commands.add_parser("inspect", help="inspect and validate CND")
     inspect_parser.add_argument(
@@ -134,6 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "browse":
+        from .gui import launch_browser
+
+        launch_browser(
+            args.path,
+            subject=args.subject,
+            task=args.task,
+            neural_unit=args.neural_unit,
+        )
+        return 0
     if args.command == "gui":
         from .gui import launch_gui
 

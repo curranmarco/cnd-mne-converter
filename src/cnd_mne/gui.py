@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
+
 from ._channels import _matching_biosemi_montage
+from ._mne_export import from_mne
 from .mne import MNECNDRecording, MontagePolicy, read_cnd_mne
 
 
@@ -205,7 +208,7 @@ class CNDImporterApp:
                 n_channels=min(20, len(raw.ch_names)),
                 scalings="auto",
             )
-        importer = add_cnd_import_button(browser)
+        importer = add_cnd_bids_toolbar(browser).importer
         importer.recording = self.recording
         importer.trial_index = self.trial_index
         importer.path.setText(self.path.text())
@@ -336,6 +339,475 @@ def add_cnd_import_button(browser: Any) -> CNDImporterApp:
     browser.addToolBar(toolbar)
     cast(Any, browser)._cnd_import_controller = importer
     return importer
+
+
+_EEG_EXTENSIONS = {".vhdr", ".set", ".edf", ".bdf", ".fif"}
+
+
+class CNDBIDSToolbar:
+    """Open and save CND and BIDS from inside an MNE Qt data viewer.
+
+    Adds four actions to the viewer's toolbar: Open CND…, Open BIDS…,
+    Save as CND… and Save as BIDS…. Saving uses what the viewer shows:
+
+    * a recording opened from CND (or from BIDS written by ``to-bids``) is
+      saved with all its trials and stimulus features;
+    * any other recording is saved as one trial, including bad channels and
+      annotations marked in the viewer where the format can hold them
+      (BIDS can; CND cannot).
+
+    The ``open_*``/``save_*`` methods do the work and can be called directly;
+    the ``_ask_*`` methods only collect choices through Qt dialogs.
+    This is a prototype using Qt's public window API, not an MNE plugin API.
+    """
+
+    def __init__(self, browser: Any) -> None:
+        from qtpy import QtWidgets
+
+        self._qt = QtWidgets
+        self.browser = browser
+        self.importer = add_cnd_import_button(browser)
+        self.last_browser: Any = None
+        self.last_result: Any = None
+        toolbar = browser.findChild(QtWidgets.QToolBar, "cndImportToolbar")
+        for text, name, tip, slot in (
+            (
+                "Open BIDS…",
+                "openBIDSAction",
+                "Open an EEG recording from a BIDS dataset in a new viewer",
+                self._ask_open_bids,
+            ),
+            (
+                "Save as CND…",
+                "saveCNDAction",
+                "Write this recording as CND MATLAB files",
+                self._ask_save_cnd,
+            ),
+            (
+                "Save as BIDS…",
+                "saveBIDSAction",
+                "Write this recording into a BIDS dataset",
+                self._ask_save_bids,
+            ),
+        ):
+            action = toolbar.addAction(text)
+            action.setObjectName(name)
+            action.setToolTip(tip)
+            action.triggered.connect(slot)
+
+    # -- what the viewer holds ------------------------------------------------
+
+    @property
+    def recording(self) -> MNECNDRecording | None:
+        """The CND recording behind this viewer, if it came from CND."""
+        return cast(Any, getattr(self.browser, "cnd_recording", None))
+
+    def current_raw(self) -> Any:
+        """The viewer's recording, with bad channels marked in the viewer."""
+        raw = self.browser.mne.inst
+        raw.info["bads"] = list(self.browser.mne.info["bads"])
+        return raw
+
+    def needs_eeg_confirmation(self) -> bool:
+        """True when nothing is typed EEG but there are untyped ('misc') channels.
+
+        Happens with BIDS files whose channels.tsv lists type ``n/a``
+        (e.g. OpenNeuro ds004574). The user must confirm they are EEG.
+        """
+        if self.recording is not None:
+            return False
+        types = set(self.browser.mne.inst.get_channel_types())
+        return "eeg" not in types and "misc" in types
+
+    def _prepared_raw(self, treat_misc_as_eeg: bool) -> Any:
+        raw = self.current_raw().copy()
+        if treat_misc_as_eeg:
+            misc = [
+                name
+                for name, kind in zip(
+                    raw.ch_names, raw.get_channel_types(), strict=True
+                )
+                if kind == "misc"
+            ]
+            raw.set_channel_types(dict.fromkeys(misc, "eeg"), on_unit_change="ignore")
+        if "eeg" not in raw.get_channel_types():
+            raise ValueError(
+                "No channels are typed as EEG (the BIDS channels.tsv may say "
+                "n/a, which MNE opens as 'misc'). Confirm they are EEG to save."
+            )
+        return raw
+
+    # -- open -----------------------------------------------------------------
+
+    def open_bids(self, path: str | Path) -> Any:
+        """Open one BIDS EEG file in a new viewer and return that viewer.
+
+        BIDS written by ``cnd-mne to-bids`` is read back as the whole CND
+        recording (all runs and stimulus features); any other BIDS recording
+        is opened as that single run with MNE-BIDS.
+        """
+        import mne_bids
+
+        from .bids import _sidecar, read_cnd_bids
+        from .mne import to_mne
+
+        bids_path = mne_bids.get_bids_path_from_fname(Path(path))
+        if _sidecar(bids_path, "cnd").exists():
+            cnd = read_cnd_bids(
+                bids_path.root,
+                subject=str(bids_path.subject),
+                task=str(bids_path.task),
+                session=bids_path.session,
+            )
+            recording = to_mne(cnd)
+            run = int(bids_path.run or 1)
+            browser = self._open_viewer(recording.raws[run - 1], recording, run - 1)
+        else:
+            raw = mne_bids.read_raw_bids(bids_path, verbose=False)
+            browser = self._open_viewer(raw)
+        browser.bids_path = bids_path
+        return browser
+
+    def _open_viewer(
+        self, raw: Any, recording: MNECNDRecording | None = None, trial: int = 0
+    ) -> Any:
+        import mne
+
+        with mne.viz.use_browser_backend("qt"):
+            browser = raw.plot(
+                block=False,
+                duration=min(10.0, raw.times[-1]),
+                n_channels=min(20, len(raw.ch_names)),
+                scalings="auto",
+            )
+        toolbar = add_cnd_bids_toolbar(browser)
+        if recording is not None:
+            browser.cnd_recording = recording
+            browser.cnd_trial_index = trial
+            toolbar.importer.recording = recording
+            toolbar.importer.trial_index = trial
+            toolbar.importer._update_controls()
+        self.last_browser = browser
+        return browser
+
+    # -- save -----------------------------------------------------------------
+
+    def save_cnd(
+        self,
+        folder: str | Path,
+        *,
+        subject: str | int = 1,
+        unit: str = "uV",
+        overwrite: bool = False,
+        treat_misc_as_eeg: bool = False,
+    ) -> Any:
+        """Write CND files; ``unit`` is used only for recordings not from CND."""
+        from .io import write_cnd
+
+        recording = self.recording
+        if recording is not None:
+            result = recording.write_cnd(
+                folder,
+                subject=subject,
+                overwrite=overwrite,
+                on_unsupported_metadata="ignore",
+            )
+        else:
+            eeg = (
+                self._prepared_raw(treat_misc_as_eeg)
+                .load_data()
+                .pick("eeg", exclude=[])
+            )
+            eeg.set_annotations(None)
+            eeg.info["bads"] = []
+            cnd = from_mne([eeg], output_unit=unit, on_unsupported_metadata="ignore")
+            result = write_cnd(cnd, folder, subject=subject, overwrite=overwrite)
+        self.last_result = result
+        return result
+
+    def save_bids(
+        self,
+        root: str | Path,
+        *,
+        subject: str,
+        task: str,
+        line_freq: float | None = None,
+        external_unit: str | None = None,
+        overwrite: bool = False,
+        treat_misc_as_eeg: bool = False,
+    ) -> Any:
+        """Write BIDS: the whole CND recording, or this single recording."""
+        import mne_bids
+
+        from .bids import write_cnd_bids
+
+        recording = self.recording
+        if recording is not None:
+            cnd = recording.to_cnd(on_unsupported_metadata="ignore")
+            result = write_cnd_bids(
+                cnd,
+                root,
+                subject=subject,
+                task=task,
+                external_unit=external_unit,
+                line_freq=line_freq,
+                overwrite=overwrite,
+            )
+        else:
+            raw = self._prepared_raw(treat_misc_as_eeg)
+            if line_freq is not None:
+                raw.info["line_freq"] = line_freq
+            result = mne_bids.write_raw_bids(
+                raw,
+                mne_bids.BIDSPath(
+                    subject=subject, task=task, datatype="eeg", root=Path(root)
+                ),
+                format="BrainVision",
+                allow_preload=True,
+                overwrite=overwrite,
+                verbose=False,
+            )
+        self.last_result = result
+        return result
+
+    # -- dialogs --------------------------------------------------------------
+
+    def _ask_open_bids(self) -> None:
+        import mne_bids
+
+        root = self._qt.QFileDialog.getExistingDirectory(
+            self.browser, "Choose a BIDS dataset folder"
+        )
+        if not root:
+            return
+        files = sorted(
+            str(Path(path.fpath).relative_to(root))
+            for path in mne_bids.BIDSPath(
+                root=Path(root), datatype="eeg", suffix="eeg"
+            ).match()
+            if path.extension in _EEG_EXTENSIONS
+        )
+        if not files:
+            self._error("No EEG recordings found in this BIDS folder.")
+            return
+        choice, ok = self._qt.QInputDialog.getItem(
+            self.browser, "Open BIDS", "EEG recording:", files, 0, False
+        )
+        if ok:
+            self._run(lambda: self.open_bids(Path(root) / choice), None)
+
+    def _confirm_eeg(self) -> bool | None:
+        """Ask once whether untyped channels are EEG; None means cancelled."""
+        if not self.needs_eeg_confirmation():
+            return False
+        count = len(self.browser.mne.inst.ch_names)
+        answer = self._qt.QMessageBox.question(
+            self.browser,
+            "Channel types",
+            f"None of the {count} channels is typed as EEG (the source lists "
+            "them as n/a). Treat the untyped channels as EEG?",
+        )
+        if answer != self._qt.QMessageBox.StandardButton.Yes:
+            return None
+        return True
+
+    def _ask_save_cnd(self) -> None:
+        treat = self._confirm_eeg()
+        if treat is None:
+            return
+        folder = self._qt.QFileDialog.getExistingDirectory(
+            self.browser, "Choose the output folder for CND files"
+        )
+        if not folder:
+            return
+        subject, ok = self._qt.QInputDialog.getText(
+            self.browser, "Save as CND", "Subject number:", text="1"
+        )
+        if not ok:
+            return
+        unit = "uV"
+        if self.recording is None:
+            unit, ok = self._qt.QInputDialog.getItem(
+                self.browser,
+                "Save as CND",
+                "Unit to store the EEG in:",
+                ["uV", "V", "mV", "nV"],
+                0,
+                False,
+            )
+            if not ok:
+                return
+        self._run(
+            lambda overwrite: self.save_cnd(
+                folder,
+                subject=subject.strip(),
+                unit=unit,
+                overwrite=overwrite,
+                treat_misc_as_eeg=treat,
+            ),
+            f"Saved CND files to {folder}",
+        )
+
+    def _ask_save_bids(self) -> None:
+        treat = self._confirm_eeg()
+        if treat is None:
+            return
+        root = self._qt.QFileDialog.getExistingDirectory(
+            self.browser, "Choose the BIDS dataset folder (new or existing)"
+        )
+        if not root:
+            return
+        previous = getattr(self.browser, "bids_path", None)
+        subject, ok = self._qt.QInputDialog.getText(
+            self.browser,
+            "Save as BIDS",
+            "Subject label (letters/digits):",
+            text=str(getattr(previous, "subject", None) or "01"),
+        )
+        if not ok:
+            return
+        task, ok = self._qt.QInputDialog.getText(
+            self.browser,
+            "Save as BIDS",
+            "Task label (letters/digits):",
+            text=str(getattr(previous, "task", None) or "task"),
+        )
+        if not ok:
+            return
+        line, ok = self._qt.QInputDialog.getItem(
+            self.browser,
+            "Save as BIDS",
+            "Mains (power-line) frequency:",
+            ["not set", "50", "60"],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        external_unit = None
+        recording = self.recording
+        neural = recording.cnd.neural if recording is not None else None
+        if neural is not None and neural.external_trials is not None:
+            choice, ok = self._qt.QInputDialog.getItem(
+                self.browser,
+                "Save as BIDS",
+                "Unit of the extra (extChan) channels:",
+                ["leave them out", "uV", "V", "mV", "nV"],
+                0,
+                False,
+            )
+            if not ok:
+                return
+            external_unit = None if choice == "leave them out" else choice
+        self._run(
+            lambda overwrite: self.save_bids(
+                root,
+                subject=subject.strip(),
+                task=task.strip(),
+                line_freq=None if line == "not set" else float(line),
+                external_unit=external_unit,
+                overwrite=overwrite,
+            ),
+            f"Saved BIDS to {root}",
+        )
+
+    def _run(self, operation: Any, done: str | None) -> None:
+        """Run an action; on existing files ask once whether to overwrite."""
+        import inspect
+
+        takes_overwrite = bool(inspect.signature(operation).parameters)
+        try:
+            operation(False) if takes_overwrite else operation()
+        except FileExistsError:
+            answer = self._qt.QMessageBox.question(
+                self.browser, "Files exist", "Some files already exist. Overwrite?"
+            )
+            if answer != self._qt.QMessageBox.StandardButton.Yes:
+                return
+            try:
+                operation(True)
+            except Exception as error:
+                self._error(str(error))
+                return
+        except Exception as error:
+            self._error(str(error))
+            return
+        if done:
+            self._qt.QMessageBox.information(self.browser, "Done", done)
+
+    def _error(self, message: str) -> None:
+        self._qt.QMessageBox.critical(self.browser, "CND / BIDS", message)
+
+
+def add_cnd_bids_toolbar(browser: Any) -> CNDBIDSToolbar:
+    """Add Open CND/BIDS and Save as CND/BIDS actions to an MNE Qt viewer.
+
+    Pass the figure returned by ``raw.plot()`` with the Qt browser backend.
+    Repeated calls reuse the same toolbar. No MNE code is patched.
+    """
+    existing = getattr(browser, "_cnd_bids_toolbar", None)
+    if existing is not None:
+        return cast(CNDBIDSToolbar, existing)
+    toolbar = CNDBIDSToolbar(browser)
+    cast(Any, browser)._cnd_bids_toolbar = toolbar
+    return toolbar
+
+
+def launch_browser(
+    path: str | Path,
+    *,
+    subject: str | None = None,
+    task: str | None = None,
+    neural_unit: str | None = None,
+) -> None:
+    """Open CND or BIDS data in the MNE viewer with the CND/BIDS toolbar.
+
+    ``path`` is a CND folder or ``.mat`` file, a BIDS EEG file, or a BIDS
+    dataset folder (then ``subject`` and ``task`` choose the recording).
+    """
+    import mne
+    from qtpy import QtWidgets
+
+    application = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    source = Path(path).expanduser()
+    placeholder = mne.io.RawArray(
+        np.zeros((1, 2)), mne.create_info(["empty"], 1.0, "misc"), verbose=False
+    )
+    if (source / "dataset_description.json").exists() or source.suffix in (
+        _EEG_EXTENSIONS
+    ):
+        if source.is_dir():
+            import mne_bids
+
+            matches = [
+                match
+                for match in mne_bids.BIDSPath(
+                    root=source,
+                    subject=subject,
+                    task=task,
+                    datatype="eeg",
+                    suffix="eeg",
+                ).match()
+                if match.extension in _EEG_EXTENSIONS
+            ]
+            if not matches:
+                raise FileNotFoundError(f"No BIDS EEG recording in {source}")
+            source = Path(matches[0].fpath)
+        with mne.viz.use_browser_backend("qt"):
+            hidden = placeholder.plot(show=False, block=False)
+        browser = add_cnd_bids_toolbar(hidden).open_bids(source)
+        hidden.close()
+    else:
+        recording = read_cnd_mne(source, subject=subject, neural_unit=neural_unit)
+        with mne.viz.use_browser_backend("qt"):
+            hidden = placeholder.plot(show=False, block=False)
+        browser = add_cnd_bids_toolbar(hidden)._open_viewer(
+            recording.raws[0], recording
+        )
+        hidden.close()
+        browser._cnd_bids_toolbar.importer.path.setText(str(source))
+    browser.show()
+    application.exec()
 
 
 def launch_gui() -> None:

@@ -53,3 +53,44 @@ passes the official `bids-validator` (1.15).
   method); the `_stim.json` description says so.
 - `--montage eeglab` positions are written in BIDS `CapTrak` space; they come
   from the CND `chanlocs`, not from a measured digitisation.
+
+## BIDS → CND → BIDS (starting from a real BIDS dataset)
+
+General BIDS goes to CND with the `open-neurodata-to-cnd` pipeline (its
+recipe says which events become stimulus features). `to-bids` writes it back,
+and `compare-bids` checks the final BIDS against the original:
+
+```bash
+# 1. BIDS -> CND (in open-neurodata-to-cnd)
+uv run neurodata-to-cnd convert recipes/ds004574-sub001-oddball.json
+# 2. CND -> BIDS (in cnd-mne-converter)
+uv run cnd-mne to-bids ../open-neurodata-to-cnd/outputs/ds004574/0.1.0/dataCND \
+  --subject 1 --bids-subject 001 --task Oddball --bids-root final_bids \
+  --line-freq 60 --montage eeglab --coordinate-scale 1 --verify
+# 3. Original BIDS vs final BIDS
+uv run cnd-mne compare-bids ../open-neurodata-to-cnd/cache/ds004574/1.0.0 final_bids \
+  --subject 001 --task Oddball --recipe ../open-neurodata-to-cnd/recipes/ds004574-sub001-oddball.json
+```
+
+`compare-bids` passes when EEG (same channels, rate, length, values within
+1e-6) and every recipe event rule (same count, onsets within half a sample)
+match. It also lists metadata that did not survive, because CND has no field
+for it (e.g. `EEGReference`, `EEGGround`).
+
+## In MNE's data viewer
+
+```bash
+uv sync --locked --extra dev --extra gui
+uv run cnd-mne browse /path/to/dataCND --subject 1           # CND
+uv run cnd-mne browse /path/to/bids --subject 001 --task Oddball  # BIDS
+```
+
+The MNE viewer gets four toolbar buttons: **Open CND…**, **Open BIDS…**,
+**Save as CND…**, **Save as BIDS…**. A recording from CND (or from BIDS made
+by `to-bids`) is saved with all trials and stimulus features. Any other
+recording is saved as one trial; bad channels and annotations marked in the
+viewer go to BIDS (`channels.tsv`, `events.tsv`) but not to CND, which has no
+field for them. When no channel is typed EEG (BIDS `type` = `n/a`), saving asks
+for confirmation first. In Python: `cnd_mne.gui.add_cnd_bids_toolbar(raw.plot())`.
+
+This is a prototype built on Qt's public window API, not an MNE plugin API.
