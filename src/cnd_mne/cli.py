@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from .exceptions import CNDValidationError
 from .inspection import inspect_cnd
 from .io import read_cnd
 from .verification import verify_dataset
@@ -116,7 +118,19 @@ def build_parser() -> argparse.ArgumentParser:
     from_bids.add_argument("--task", required=True)
     from_bids.add_argument("--session")
     from_bids.add_argument("--output", required=True, type=Path, help="dataCND folder")
-    from_bids.add_argument("--output-unit", help="default: unit of the original CND")
+    from_bids.add_argument(
+        "--output-unit", help="default: original CND unit, or uV for other BIDS"
+    )
+    from_bids.add_argument(
+        "--event-column",
+        help="events.tsv column whose labels become features (default: "
+        "trial_type, else value)",
+    )
+    from_bids.add_argument(
+        "--treat-misc-as-eeg",
+        action="store_true",
+        help="count channels typed n/a (misc) as EEG",
+    )
     from_bids.add_argument("--overwrite", action="store_true")
 
     compare_bids = commands.add_parser(
@@ -131,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     compare_bids.add_argument("--final-task", help="default: --task")
     compare_bids.add_argument("--session")
     compare_bids.add_argument("--run", help="original run, if there are several")
+    compare_bids.add_argument(
+        "--event-column",
+        help="without --recipe: check each final event type against this "
+        "original events.tsv column",
+    )
     compare_bids.add_argument(
         "--recipe",
         type=Path,
@@ -223,16 +242,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         round_trip = summary.get("round_trip")
         return 1 if isinstance(round_trip, dict) and not round_trip["passed"] else 0
     if args.command == "from-bids":
-        from .bids import read_cnd_bids
+        from .bids import bids_to_cnd
         from .io import write_cnd
 
-        recording = read_cnd_bids(
-            args.bids_root,
-            subject=args.subject,
-            task=args.task,
-            session=args.session,
-            output_unit=args.output_unit,
-        )
+        try:
+            recording = bids_to_cnd(
+                args.bids_root,
+                subject=args.subject,
+                task=args.task,
+                session=args.session,
+                output_unit=args.output_unit,
+                event_column=args.event_column,
+                treat_misc_as_eeg=args.treat_misc_as_eeg,
+            )
+        except (FileNotFoundError, CNDValidationError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
         paths = write_cnd(
             recording, args.output, subject=args.subject, overwrite=args.overwrite
         )
@@ -253,6 +278,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             session=args.session,
             run=args.run,
             event_map=event_map_from_recipe(args.recipe) if args.recipe else None,
+            event_column=args.event_column,
         )
         print(json.dumps(comparison, indent=2, default=str))
         return 0 if comparison["passed"] else 1

@@ -597,6 +597,7 @@ def compare_bids(
     session: str | None = None,
     run: str | None = None,
     event_map: dict[str, tuple[str, str]] | None = None,
+    event_column: str | None = None,
 ) -> dict[str, Any]:
     """Compare an original BIDS EEG run with the BIDS written after CND.
 
@@ -617,13 +618,20 @@ def compare_bids(
     original_path = _single_run(
         mne_bids, original_root, subject, task, session, run, "original"
     )
+    # CND keeps runs as trials in order, and to-bids writes trial k as run-k.
+    final_run = None
+    if run is not None:
+        originals = _subject_runs(original_root, subject, task, session)
+        final_run = str(
+            [path.fpath for path in originals].index(original_path.fpath) + 1
+        )
     final_path = _single_run(
         mne_bids,
         final_root,
         final_subject or subject,
         final_task or task,
         session,
-        None,
+        final_run,
         "final",
     )
     with warnings.catch_warnings():
@@ -667,6 +675,12 @@ def compare_bids(
     original_events = _read_tsv(_sibling(original_path, "events", ".tsv"))
     final_events = _read_tsv(_sibling(final_path, "events", ".tsv"))
     events: dict[str, Any] = {}
+    if event_map is None and event_column is not None:
+        event_map = {
+            name: (event_column, name)
+            for name in dict.fromkeys(row.get("trial_type", "") for row in final_events)
+            if name and name != "n/a"
+        }
     for name, (column, value) in (event_map or {}).items():
         before = sorted(
             float(row["onset"])
@@ -808,3 +822,207 @@ def _metadata_differences(original_path: Any, final_path: Any) -> dict[str, Any]
             "final": final_electrodes,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Any BIDS EEG dataset -> CND
+# ---------------------------------------------------------------------------
+
+_EXTERNAL_TYPES = ("eog", "ecg", "emg")
+_DATA_EXTENSIONS = {".vhdr", ".set", ".edf", ".bdf", ".fif"}
+
+
+def bids_to_cnd(
+    bids_root: str | Path,
+    *,
+    subject: str | int,
+    task: str,
+    session: str | None = None,
+    output_unit: str | None = None,
+    event_column: str | None = None,
+    ignore_events: Sequence[str] = ("boundary",),
+    treat_misc_as_eeg: bool = False,
+) -> CNDRecording:
+    """Read one subject of a BIDS EEG dataset into CND.
+
+    BIDS written by :func:`write_cnd_bids` is restored exactly with
+    :func:`read_cnd_bids`. Any other BIDS EEG dataset is read with
+    :func:`read_any_bids`.
+    """
+    probe = _subject_runs(bids_root, subject, task, session)
+    if _sidecar(probe[0], "cnd").exists():
+        return read_cnd_bids(
+            bids_root,
+            subject=subject,
+            task=task,
+            session=session,
+            output_unit=output_unit,
+        )
+    return read_any_bids(
+        bids_root,
+        subject=subject,
+        task=task,
+        session=session,
+        output_unit=output_unit or "uV",
+        event_column=event_column,
+        ignore_events=ignore_events,
+        treat_misc_as_eeg=treat_misc_as_eeg,
+    )
+
+
+def read_any_bids(
+    bids_root: str | Path,
+    *,
+    subject: str | int,
+    task: str,
+    session: str | None = None,
+    output_unit: str = "uV",
+    event_column: str | None = None,
+    ignore_events: Sequence[str] = ("boundary",),
+    treat_misc_as_eeg: bool = False,
+) -> CNDRecording:
+    """Convert a general BIDS EEG subject (e.g. from OpenNeuro) to CND.
+
+    * Each EEG run of the subject and task becomes one CND trial, in run order.
+    * EEG channels become ``eeg.data``; EOG, ECG and EMG channels become
+      ``extChan``. Other channel types are left out. With
+      ``treat_misc_as_eeg``, channels typed ``n/a`` (read as ``misc``) count
+      as EEG; without it such datasets raise an error rather than a guess.
+    * Every event type in ``events.tsv`` becomes one stimulus feature: an
+      impulse track (1 at each onset) at the EEG sampling rate. The labels
+      come from ``event_column`` (default: ``trial_type`` if it has labels,
+      else ``value``); ``ignore_events`` are skipped.
+
+    Continuous stimulus features (e.g. a speech envelope) are not in general
+    BIDS datasets; they need a recipe (open-neurodata-to-cnd).
+    """
+    mne_bids = _import_mne_bids()
+    runs = _subject_runs(bids_root, subject, task, session)
+    neural: list[mne.io.BaseRaw] = []
+    external: list[mne.io.BaseRaw] = []
+    event_tables: list[list[dict[str, str]]] = []
+    positions: list[int] = []
+    for position, bids_path in enumerate(runs, start=1):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            raw = mne_bids.read_raw_bids(
+                bids_path, extra_params={"preload": True}, verbose=False
+            )
+        raw.set_annotations(None)
+        raw.info["bads"] = []
+        types = raw.get_channel_types()
+        if treat_misc_as_eeg and "eeg" not in types:
+            raw.set_channel_types(
+                {
+                    n: "eeg"
+                    for n, t in zip(raw.ch_names, types, strict=True)
+                    if t == "misc"
+                },
+                on_unit_change="ignore",
+            )
+            types = raw.get_channel_types()
+        if "eeg" not in types:
+            raise CNDValidationError(
+                f"{Path(bids_path.fpath).name} has no channels typed EEG. If its "
+                "channels.tsv says n/a, pass treat_misc_as_eeg / "
+                "--treat-misc-as-eeg after checking they are EEG."
+            )
+        extra = [
+            n for n, t in zip(raw.ch_names, types, strict=True) if t in _EXTERNAL_TYPES
+        ]
+        if extra:
+            external.append(raw.copy().pick(extra))
+        neural.append(raw.copy().pick("eeg", exclude=[]))
+        event_tables.append(_read_tsv(_sibling(bids_path, "events", ".tsv")))
+        positions.append(int(bids_path.run) if bids_path.run else position)
+
+    if external and len(external) != len(neural):
+        raise CNDValidationError("Runs differ in their EOG/ECG/EMG channels")
+    sfreqs = {float(raw.info["sfreq"]) for raw in neural}
+    if len(sfreqs) != 1:
+        raise CNDValidationError(
+            f"Runs have different sampling rates: {sorted(sfreqs)}"
+        )
+    sfreq = sfreqs.pop()
+    stimulus = _impulse_stimulus(
+        event_tables,
+        [raw.n_times for raw in neural],
+        sfreq,
+        event_column,
+        set(ignore_events),
+    )
+    sidecar = _read_json(_sibling(runs[0], "eeg", ".json"))
+    manufacturer = sidecar.get("Manufacturer")
+    return from_mne(
+        neural,
+        stimulus=stimulus,
+        external_raws=external or None,
+        external_unit=output_unit if external else None,
+        external_description=(", ".join(external[0].ch_names) if external else None),
+        output_unit=output_unit,
+        device_name=manufacturer if manufacturer not in (None, "n/a") else None,
+        original_trial_positions=positions,
+        on_unsupported_metadata="ignore",
+    )
+
+
+def _subject_runs(
+    bids_root: str | Path, subject: str | int, task: str, session: str | None
+) -> list[Any]:
+    mne_bids = _import_mne_bids()
+    query = mne_bids.BIDSPath(
+        root=Path(bids_root).expanduser(),
+        subject=_entity(subject, "subject"),
+        session=_entity(session, "session") if session is not None else None,
+        task=_entity(task, "task"),
+        datatype="eeg",
+        suffix="eeg",
+    )
+    runs = [path for path in query.match() if path.extension in _DATA_EXTENSIONS]
+    if not runs:
+        raise FileNotFoundError(f"No BIDS EEG recordings found for {query}")
+    return sorted(runs, key=lambda path: int(path.run or 0))
+
+
+def _impulse_stimulus(
+    tables: list[list[dict[str, str]]],
+    lengths: list[int],
+    sfreq: float,
+    column: str | None,
+    ignore: set[str],
+) -> CNDStimulus | None:
+    rows = [row for table in tables for row in table]
+    if not rows:
+        return None
+    if column is None:
+        labelled = [
+            row.get("trial_type", "")
+            for row in rows
+            if row.get("trial_type", "n/a") not in ("", "n/a")
+        ]
+        column = "trial_type" if labelled else "value"
+    if column not in rows[0]:
+        raise CNDValidationError(f"events.tsv has no column {column!r}")
+    labels = list(
+        dict.fromkeys(
+            row[column]
+            for row in rows
+            if row.get(column, "n/a") not in ("", "n/a") and row[column] not in ignore
+        )
+    )
+    if not labels:
+        return None
+    features: list[tuple[np.ndarray, ...]] = []
+    for label in labels:
+        trials = []
+        for table, length in zip(tables, lengths, strict=True):
+            track = np.zeros(length)
+            for row in table:
+                if row.get(column) != label:
+                    continue
+                sample = int(round(float(row["onset"]) * sfreq))
+                if 0 <= sample < length:
+                    track[sample] = 1.0
+            trials.append(track)
+        features.append(tuple(trials))
+    return CNDStimulus(names=tuple(labels), features=tuple(features), sfreq=sfreq)

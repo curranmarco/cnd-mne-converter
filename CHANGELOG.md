@@ -4,6 +4,7 @@ Nothing is tagged as a real release yet. This is what is on `main`.
 
 ## Unreleased
 
+- `from-bids` reads any BIDS EEG dataset (`read_any_bids`): runs become trials, event types become impulse features (`--event-column`, `--treat-misc-as-eeg`); `compare-bids --event-column` checks them
 - `cnd-mne compare-bids`: check BIDS -> CND -> BIDS against the original dataset
 - MNE viewer toolbar (`cnd-mne browse`, `add_cnd_bids_toolbar`): Open CND/BIDS, Save as CND/BIDS
 - BIDS export and import (`cnd_mne.bids`, `cnd-mne to-bids` / `from-bids`): CND → MNE → BIDS and back, with a round-trip check; optional `bids` extra

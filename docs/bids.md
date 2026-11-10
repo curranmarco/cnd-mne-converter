@@ -77,6 +77,34 @@ uv run cnd-mne compare-bids ../open-neurodata-to-cnd/cache/ds004574/1.0.0 final_
 match. It also lists metadata that did not survive, because CND has no field
 for it (e.g. `EEGReference`, `EEGGround`).
 
+### Without a recipe: `from-bids` on any BIDS EEG dataset
+
+`from-bids` also reads BIDS that `to-bids` did not write (for example straight
+from OpenNeuro). If there is no `_cnd.json`, it converts it the general way:
+
+- each EEG run of the subject and task becomes one CND trial, in run order;
+- EEG channels become `eeg.data`; EOG, ECG and EMG become `extChan`; other types are left out;
+- each event type in `events.tsv` becomes one stimulus feature: an impulse
+  track (1 at each onset) at the EEG rate. Labels come from `--event-column`
+  (default `trial_type`, else `value`); `boundary` events are skipped.
+
+Channels typed `n/a` in `channels.tsv` are read by MNE as `misc`; after
+checking they are EEG, say so with `--treat-misc-as-eeg`.
+
+```bash
+uv run cnd-mne from-bids ../open-neurodata-to-cnd/cache/ds004574/1.0.0 \
+  --subject 001 --task Oddball --treat-misc-as-eeg --output generic/dataCND
+uv run cnd-mne to-bids generic/dataCND --subject 1 --task Oddball \
+  --bids-root generic/bids --line-freq 60 --montage eeglab --coordinate-scale 1
+uv run cnd-mne compare-bids ../open-neurodata-to-cnd/cache/ds004574/1.0.0 generic/bids \
+  --subject 001 --task Oddball --final-subject 1 --event-column value
+```
+
+On ds004574 sub-001 this passes: 63 channels, 408100 samples, maximum
+relative error 5e-8, and the 236 `S  1`, 236 `S  2` and 236 `S  3` events at
+the same times. Continuous features such as a speech envelope are not in a
+general BIDS dataset: they still need a recipe.
+
 ## In MNE's data viewer
 
 ```bash
