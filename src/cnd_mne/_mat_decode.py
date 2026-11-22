@@ -167,11 +167,13 @@ def _parse_neural_trials(
         if datatype is not None
         else None
     )
-    array = np.asarray(data, dtype=object)
+    # Only fNIRS cell grids need the object view; making it for a plain numeric
+    # EEG matrix would box every sample (about 5x the data size in memory).
+    is_fnirs_grid = data_type in {"fnirs", "nirs"} and bool(signal_types)
+    array: Any = np.asarray(data, dtype=object) if is_fnirs_grid else np.empty(0)
     if (
-        data_type in {"fnirs", "nirs"}
+        is_fnirs_grid
         and signal_types
-        and array.dtype == object
         and array.ndim == 2
         and array.shape[0] == len(signal_types)
     ):

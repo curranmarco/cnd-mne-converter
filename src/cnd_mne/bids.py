@@ -166,9 +166,14 @@ def write_cnd_bids(
     neural_paths: list[Path] = []
     stimulus_paths: list[Path] = []
 
-    for index, raw in enumerate(mne_recording.raws):
+    # The raws come from to_mne above and are ours: write each run in place and
+    # drop it afterwards, so long recordings do not need several copies.
+    run_raws: list[Any] = list(mne_recording.raws)
+    del mne_recording
+    for index in range(len(run_raws)):
         run = index + 1
-        run_raw = raw.copy()
+        run_raw = run_raws[index]
+        run_raws[index] = None
         if external_raws is not None:
             run_raw.add_channels([external_raws[index].copy()], force_update_info=True)
         run_raw.info["line_freq"] = line_freq
@@ -634,12 +639,23 @@ def compare_bids(
         final_run = str(
             [path.fpath for path in originals].index(original_path.fpath) + 1
         )
+    # CND has no sessions, so BIDS written from it usually has none either.
+    final_session = session
+    if (
+        session is not None
+        and not (
+            Path(final_root).expanduser()
+            / f"sub-{final_subject or subject}"
+            / f"ses-{session}"
+        ).is_dir()
+    ):
+        final_session = None
     final_path = _single_run(
         mne_bids,
         final_root,
         final_subject or subject,
         final_task or task,
-        session,
+        final_session,
         final_run,
         "final",
     )
@@ -694,7 +710,7 @@ def compare_bids(
         before = sorted(
             float(row["onset"])
             for row in original_events
-            if str(row.get(column, "")).strip() == value.strip()
+            if _event_matches(row, column, value.strip())
         )
         after = sorted(
             float(row["onset"]) for row in final_events if row.get("trial_type") == name
@@ -945,6 +961,7 @@ def read_any_bids(
         event_tables.append(_read_tsv(_sibling(bids_path, "events", ".tsv")))
         positions.append(int(bids_path.run) if bids_path.run else position)
 
+    _warn_implausible_amplitude(neural)
     if external and len(external) != len(neural):
         raise CNDValidationError("Runs differ in their EOG/ECG/EMG channels")
     sfreqs = {float(raw.info["sfreq"]) for raw in neural}
@@ -973,6 +990,40 @@ def read_any_bids(
         original_trial_positions=positions,
         on_unsupported_metadata="ignore",
     )
+
+
+def _event_matches(row: dict[str, str], column: str, value: str) -> bool:
+    """True if the row's ``column`` is ``value``, or its ``trial_type/value``.
+
+    When events.tsv has both columns, MNE-BIDS names events ``trial_type/value``
+    (e.g. ``response/2``); events saved from the MNE viewer carry that name.
+    """
+    if str(row.get(column, "")).strip() == value:
+        return True
+    combined = f"{row.get('trial_type', '')}/{row.get('value', '')}".strip()
+    return "/" in value and combined == value
+
+
+def _warn_implausible_amplitude(raws: Sequence[mne.io.BaseRaw]) -> None:
+    """Warn when EEG values are physically impossible (above 1 V).
+
+    Scalp EEG, even unreferenced with DC offsets, stays well below 1 V. Larger
+    values mean the dataset's units are wrong (e.g. microvolts stored as volts).
+    The data are converted as stored; the warning says what to check.
+    """
+    for raw in raws:
+        data = raw.get_data(
+            picks="eeg", stop=min(raw.n_times, 60 * int(raw.info["sfreq"]))
+        )
+        if data.size and float(np.nanpercentile(np.abs(data), 99)) > 1.0:
+            warnings.warn(
+                "EEG values above 1 V: the dataset's units are probably wrong "
+                "(check units in channels.tsv and the EEG file header). "
+                "Values were converted as stored.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return
 
 
 def _subject_runs(

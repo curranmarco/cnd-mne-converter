@@ -218,3 +218,57 @@ def test_cli_from_bids_then_compare(
         == 1
     )
     assert "error:" in capsys.readouterr().err
+
+
+def _session_dataset(root: Path, scale: float = 1e-5) -> None:
+    raw = mne.io.RawArray(
+        np.random.default_rng(3).standard_normal((3, 2000)) * scale,
+        mne.create_info(["Fz", "Cz", "Pz"], SFREQ, "eeg"),
+        verbose=False,
+    )
+    raw.set_annotations(mne.Annotations([1.0, 2.0, 3.0], 0.0, ["go", "stop", "go"]))
+    mne_bids.write_raw_bids(
+        raw,
+        mne_bids.BIDSPath(
+            subject="01", session="01", task="t", datatype="eeg", root=root
+        ),
+        format="BrainVision",
+        allow_preload=True,
+        event_id={"go": 1, "stop": 2},
+        verbose=False,
+    )
+
+
+def test_sessions_round_trip(tmp_path: Path) -> None:
+    from cnd_mne.bids import compare_bids
+
+    _session_dataset(tmp_path / "original")
+    cnd = read_any_bids(tmp_path / "original", subject="01", task="t", session="01")
+    write_cnd_bids(cnd, tmp_path / "final", subject=1, task="t")  # no session
+    report = compare_bids(
+        tmp_path / "original",
+        tmp_path / "final",
+        subject="01",
+        task="t",
+        session="01",
+        final_subject="1",
+        event_column="trial_type",
+    )
+    assert report["passed"]
+    assert report["events"]["go"]["n_final"] == 2
+
+
+def test_combined_event_labels_match() -> None:
+    from cnd_mne.bids import _event_matches
+
+    row = {"trial_type": "response", "value": "2"}
+    assert _event_matches(row, "trial_type", "response")
+    assert _event_matches(row, "trial_type", "response/2")
+    assert not _event_matches(row, "trial_type", "response/4")
+    assert not _event_matches({"value": "S  1"}, "value", "S  2")
+
+
+def test_impossible_amplitude_warns(tmp_path: Path) -> None:
+    _session_dataset(tmp_path, scale=5.0)  # volts: impossible for EEG
+    with pytest.warns(RuntimeWarning, match="above 1 V"):
+        read_any_bids(tmp_path, subject="01", task="t", session="01")
