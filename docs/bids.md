@@ -113,12 +113,26 @@ uv run cnd-mne browse /path/to/dataCND --subject 1           # CND
 uv run cnd-mne browse /path/to/bids --subject 001 --task Oddball  # BIDS
 ```
 
-The MNE viewer gets four toolbar buttons: **Open CND…**, **Open BIDS…**,
-**Save as CND…**, **Save as BIDS…**. A recording from CND (or from BIDS made
-by `to-bids`) is saved with all trials and stimulus features. Any other
-recording is saved as one trial; bad channels and annotations marked in the
-viewer go to BIDS (`channels.tsv`, `events.tsv`) but not to CND, which has no
-field for them. When no channel is typed EEG (BIDS `type` = `n/a`), saving asks
-for confirmation first. In Python: `cnd_mne.gui.add_cnd_bids_toolbar(raw.plot())`.
+This is MNE's own data viewer (the window `raw.plot()` and `mne browse_raw`
+open; MNE has no separate start page). We only add four toolbar buttons:
+**Open CND…**, **Open BIDS…**, **Save as CND…**, **Save as BIDS…**. The small
+"CND to MNE" window that Open CND… shows is ours, not MNE's.
+
+What the buttons save:
+
+| Opened from | Save as BIDS | Save as CND |
+|---|---|---|
+| CND (or BIDS made by `to-bids`) | all trials as runs, stimulus features, bad channels marked in the viewer, electrode positions (if applied when opening), `deviceName` as `Manufacturer` | all trials and stimulus features |
+| Any other BIDS | that recording, with bad channels and annotations | one trial; each annotation type becomes an impulse stimulus feature (`boundary`/`BAD…` skipped) |
+
+CND has no field for bad channels, so Save as CND does not keep them. When no
+channel is typed EEG (BIDS `type` = `n/a`), saving asks for confirmation first.
+In Python: `cnd_mne.gui.add_cnd_bids_toolbar(raw.plot())`.
+
+`scripts/check_viewer_save.py` runs the same code as the buttons on an original
+CND and an original BIDS dataset and compares the results with the originals.
+On CNSP LalorNatSpeech subject 10 (20 trials, 128 channels, 4 features) and
+OpenNeuro ds004574 sub-001 every check passes; the BIDS written from the CND
+passes bids-validator 1.15.
 
 This is a prototype built on Qt's public window API, not an MNE plugin API.

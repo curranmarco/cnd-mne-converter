@@ -351,10 +351,12 @@ class CNDBIDSToolbar:
     Save as CND… and Save as BIDS…. Saving uses what the viewer shows:
 
     * a recording opened from CND (or from BIDS written by ``to-bids``) is
-      saved with all its trials and stimulus features;
-    * any other recording is saved as one trial, including bad channels and
-      annotations marked in the viewer where the format can hold them
-      (BIDS can; CND cannot).
+      saved with all its trials and stimulus features; Save as BIDS also
+      keeps the bad channels marked in the viewer and, if positions were
+      applied when opening, the electrode positions;
+    * any other recording is saved as one trial. Save as BIDS keeps its bad
+      channels and annotations; Save as CND turns each annotation type into
+      an impulse stimulus feature (CND has no place for bad channels).
 
     The ``open_*``/``save_*`` methods do the work and can be called directly;
     the ``_ask_*`` methods only collect choices through Qt dialogs.
@@ -437,6 +439,12 @@ class CNDBIDSToolbar:
             )
         return raw
 
+    def _montage_choice(self) -> tuple[MontagePolicy, float | None]:
+        """Electrode positions as chosen when this CND recording was opened."""
+        if self.importer.use_montage.isChecked():
+            return "eeglab", float(self.importer.coordinate_scale.text())
+        return "none", None
+
     # -- open -----------------------------------------------------------------
 
     def open_bids(self, path: str | Path) -> Any:
@@ -518,9 +526,15 @@ class CNDBIDSToolbar:
                 .load_data()
                 .pick("eeg", exclude=[])
             )
+            stimulus = annotation_stimulus(eeg)
             eeg.set_annotations(None)
             eeg.info["bads"] = []
-            cnd = from_mne([eeg], output_unit=unit, on_unsupported_metadata="ignore")
+            cnd = from_mne(
+                [eeg],
+                stimulus=stimulus,
+                output_unit=unit,
+                on_unsupported_metadata="ignore",
+            )
             result = write_cnd(cnd, folder, subject=subject, overwrite=overwrite)
         self.last_result = result
         return result
@@ -544,13 +558,17 @@ class CNDBIDSToolbar:
         recording = self.recording
         if recording is not None:
             cnd = recording.to_cnd(on_unsupported_metadata="ignore")
+            montage, scale = self._montage_choice()
             result = write_cnd_bids(
                 cnd,
                 root,
                 subject=subject,
                 task=task,
                 external_unit=external_unit,
+                montage=montage,
+                coordinate_scale_to_meters=scale,
                 line_freq=line_freq,
+                bad_channels=self.current_raw().info["bads"],
                 overwrite=overwrite,
             )
         else:
@@ -825,3 +843,35 @@ def launch_gui() -> None:
     window = CNDImporterApp()
     window.show()
     application.exec()
+
+
+def annotation_stimulus(
+    raw: Any, ignore: tuple[str, ...] = ("boundary", "BAD", "EDGE")
+) -> Any:
+    """One impulse feature per annotation type (1 at each onset), or None.
+
+    Used by Save as CND, so events opened from BIDS (or added in the viewer)
+    become CND stimulus features, like ``cnd-mne from-bids`` does.
+    """
+    from .model import CNDStimulus
+
+    sfreq = float(raw.info["sfreq"])
+    first = raw.first_time
+    labels = [
+        label
+        for label in dict.fromkeys(raw.annotations.description)
+        if not any(label.upper().startswith(prefix.upper()) for prefix in ignore)
+    ]
+    if not labels:
+        return None
+    features = []
+    for label in labels:
+        track = np.zeros(raw.n_times)
+        for onset, description in zip(
+            raw.annotations.onset, raw.annotations.description, strict=True
+        ):
+            sample = int(round((onset - first) * sfreq))
+            if description == label and 0 <= sample < raw.n_times:
+                track[sample] = 1.0
+        features.append((track,))
+    return CNDStimulus(names=tuple(labels), features=tuple(features), sfreq=sfreq)

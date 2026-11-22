@@ -131,6 +131,48 @@ def test_plain_bids_keeps_viewer_bad_channels_and_annotations(qt_app, tmp_path) 
     assert paths.neural.exists() and cnd.neural is not None
     assert cnd.neural.channel_names == ("Fz", "Cz", "Pz")
     assert cnd.neural.data_unit == "uV"
+    # the annotation added in the viewer becomes a stimulus feature
+    assert cnd.stimulus is not None
+    assert cnd.stimulus.names == ("blink",)
+    assert np.flatnonzero(cnd.stimulus.features[0][0]).tolist() == [200]
+
+
+def test_cnd_viewer_save_bids_keeps_bads_positions_and_device(qt_app, tmp_path) -> None:
+    recording = read_cnd_mne(
+        FIXTURE, subject=1, montage="eeglab", coordinate_scale_to_meters=0.01
+    )
+    browser = _viewer(recording.raws[0])
+    browser.cnd_recording = recording
+    toolbar = add_cnd_bids_toolbar(browser)
+    toolbar.importer.use_montage.setChecked(True)  # as ticked when opening
+    browser.mne.info["bads"].append("Cz")
+    toolbar.save_bids(tmp_path, subject="1", task="x", external_unit="uV")
+    eeg_dir = tmp_path / "sub-1" / "eeg"
+    with (eeg_dir / "sub-1_task-x_run-1_channels.tsv").open() as handle:
+        status = {
+            row["name"]: row["status"] for row in csv.DictReader(handle, delimiter="\t")
+        }
+    assert status["Cz"] == "bad" and status["Fz"] == "good"
+    assert list(eeg_dir.glob("*_electrodes.tsv"))
+    sidecar = (eeg_dir / "sub-1_task-x_run-1_eeg.json").read_text()
+    assert "Synthetic four-channel system" in sidecar
+    back = read_cnd_bids(tmp_path, subject="1", task="x")
+    assert compare_cnd(read_cnd(FIXTURE, subject=1), back)["passed"]
+
+
+def test_annotation_stimulus_skips_boundaries() -> None:
+    from cnd_mne.gui import annotation_stimulus
+
+    raw = mne.io.RawArray(
+        np.zeros((1, 500)), mne.create_info(["Fz"], 100.0, "eeg"), verbose=False
+    )
+    assert annotation_stimulus(raw) is None
+    raw.set_annotations(
+        mne.Annotations([1.0, 2.0, 3.0, 9.0], 0.0, ["go", "boundary", "BAD_x", "go"])
+    )
+    stimulus = annotation_stimulus(raw)
+    assert stimulus is not None and stimulus.names == ("go",)
+    assert np.flatnonzero(stimulus.features[0][0]).tolist() == [100]
 
 
 def test_save_dialogs_and_overwrite(qt_app, tmp_path, monkeypatch) -> None:

@@ -4,6 +4,7 @@ Nothing is tagged as a real release yet. This is what is on `main`.
 
 ## Unreleased
 
+- MNE viewer: Save as CND keeps annotations as stimulus features; Save as BIDS from CND keeps viewer bad channels, electrode positions and `deviceName`; `scripts/check_viewer_save.py`
 - `from-bids` reads any BIDS EEG dataset (`read_any_bids`): runs become trials, event types become impulse features (`--event-column`, `--treat-misc-as-eeg`); `compare-bids --event-column` checks them
 - `cnd-mne compare-bids`: check BIDS -> CND -> BIDS against the original dataset
 - MNE viewer toolbar (`cnd-mne browse`, `add_cnd_bids_toolbar`): Open CND/BIDS, Save as CND/BIDS

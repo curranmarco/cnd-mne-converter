@@ -65,6 +65,7 @@ def write_cnd_bids(
     line_freq: float | None = None,
     dataset_name: str | None = None,
     events_from_sparse_features: bool = True,
+    bad_channels: Sequence[str] = (),
     overwrite: bool = False,
 ) -> BIDSExport:
     """Write one CND subject (neural + stimulus) as a BIDS EEG dataset.
@@ -92,6 +93,9 @@ def write_cnd_bids(
         ``n/a``.
     events_from_sparse_features
         Also list onsets of sparse 1-D features in ``events.tsv``.
+    bad_channels
+        Channels to mark ``bad`` in ``channels.tsv`` (CND cannot store this,
+        e.g. channels marked bad in the MNE viewer).
     """
     mne_bids = _import_mne_bids()
     neural = recording.neural
@@ -168,6 +172,9 @@ def write_cnd_bids(
         if external_raws is not None:
             run_raw.add_channels([external_raws[index].copy()], force_update_info=True)
         run_raw.info["line_freq"] = line_freq
+        run_raw.info["bads"] = [
+            name for name in bad_channels if name in run_raw.ch_names
+        ]
         event_id: dict[str, int] | None = None
         if stimulus is not None and events_from_sparse_features:
             annotations, event_id = _sparse_feature_annotations(
@@ -195,8 +202,10 @@ def write_cnd_bids(
         neural_paths.append(Path(written.fpath))
 
         # MNE-BIDS infers "Brain Products" from the BrainVision file format;
-        # the original amplifier is not known from CND.
-        _update_json(_sidecar(written, "eeg"), {"Manufacturer": "n/a"})
+        # use the amplifier named in CND (deviceName), if any.
+        _update_json(
+            _sidecar(written, "eeg"), {"Manufacturer": neural.device_name or "n/a"}
+        )
         cnd_entries: dict[str, Any] = {
             "CNDTrialIndex": run,
             "CNDDataUnit": source_unit,

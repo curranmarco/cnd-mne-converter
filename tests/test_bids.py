@@ -58,7 +58,7 @@ def test_layout_is_bids(tmp_path: Path) -> None:
     assert list(eeg_dir.glob("*_electrodes.tsv"))
     sidecar = json.loads((eeg_dir / "sub-1_task-listening_run-1_eeg.json").read_text())
     assert sidecar["PowerLineFrequency"] == 50
-    assert sidecar["Manufacturer"] == "n/a"
+    assert sidecar["Manufacturer"] == "Synthetic four-channel system"  # CND deviceName
     assert not any(key.startswith("CND") for key in sidecar)
 
 
