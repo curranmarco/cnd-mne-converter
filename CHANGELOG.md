@@ -4,6 +4,7 @@ Nothing is tagged as a real release yet. This is what is on `main`.
 
 ## Unreleased
 
+- Speech envelope: `cnd_mne.envelope` (Hilbert as in CNSP, and an mTRFenvelope port), `from-bids --audio/--envelope-method/--stim-sfreq`, `stim_file` support, word onsets from TextGrid; `scripts/check_envelope.py` (r = 0.9997 vs CNSP)
 - Tested on 4 OpenNeuro datasets (EEGLAB, BrainVision, BDF, EDF; see docs/datasets-tested.md); compare-bids handles sessions and `trial_type/value` event names; reading long CND recordings uses ~1x memory instead of ~5x; from-bids warns about impossible EEG amplitudes
 - MNE viewer: Save as CND keeps annotations as stimulus features; Save as BIDS from CND keeps viewer bad channels, electrode positions and `deviceName`; `scripts/check_viewer_save.py`
 - `from-bids` reads any BIDS EEG dataset (`read_any_bids`): runs become trials, event types become impulse features (`--event-column`, `--treat-misc-as-eeg`); `compare-bids --event-column` checks them

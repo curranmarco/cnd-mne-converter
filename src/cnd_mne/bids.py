@@ -33,6 +33,7 @@ import numpy as np
 
 from ._channels import _canonical_unit
 from ._mne_export import from_mne
+from .envelope import EnvelopeMethod, audio_envelope, textgrid_word_onsets
 from .exceptions import CNDUnsupportedError, CNDValidationError
 from .mne import MontagePolicy, to_mne
 from .model import CNDRecording, CNDStimulus, _resolve_condition_name
@@ -867,6 +868,9 @@ def bids_to_cnd(
     event_column: str | None = None,
     ignore_events: Sequence[str] = ("boundary",),
     treat_misc_as_eeg: bool = False,
+    audio: str | None = None,
+    envelope_method: EnvelopeMethod = "hilbert",
+    stim_sfreq: float = 128.0,
 ) -> CNDRecording:
     """Read one subject of a BIDS EEG dataset into CND.
 
@@ -892,6 +896,9 @@ def bids_to_cnd(
         event_column=event_column,
         ignore_events=ignore_events,
         treat_misc_as_eeg=treat_misc_as_eeg,
+        audio=audio,
+        envelope_method=envelope_method,
+        stim_sfreq=stim_sfreq,
     )
 
 
@@ -905,6 +912,9 @@ def read_any_bids(
     event_column: str | None = None,
     ignore_events: Sequence[str] = ("boundary",),
     treat_misc_as_eeg: bool = False,
+    audio: str | None = None,
+    envelope_method: EnvelopeMethod = "hilbert",
+    stim_sfreq: float = 128.0,
 ) -> CNDRecording:
     """Convert a general BIDS EEG subject (e.g. from OpenNeuro) to CND.
 
@@ -918,8 +928,15 @@ def read_any_bids(
       come from ``event_column`` (default: ``trial_type`` if it has labels,
       else ``value``); ``ignore_events`` are skipped.
 
-    Continuous stimulus features (e.g. a speech envelope) are not in general
-    BIDS datasets; they need a recipe (open-neurodata-to-cnd).
+    Speech envelope (see :mod:`cnd_mne.envelope`): the audio of each run is
+    found either from a ``stim_file`` column in ``events.tsv`` (the BIDS way:
+    a file in ``stimuli/`` and the onset it was played at), or from
+    ``audio``, a path pattern relative to ``bids_root`` such as
+    ``"stimuli/audio{run:02d}.wav"`` for audio that starts with the run.
+    Each run then gets a "Speech Envelope" feature, and "Word Onset" (all
+    words) when a ``.TextGrid`` with a ``words`` tier sits next to the audio.
+    With audio, all features use ``stim_sfreq`` (CNSP uses 128 Hz); without,
+    the EEG sampling rate as before.
     """
     mne_bids = _import_mne_bids()
     runs = _subject_runs(bids_root, subject, task, session)
@@ -970,13 +987,25 @@ def read_any_bids(
             f"Runs have different sampling rates: {sorted(sfreqs)}"
         )
     sfreq = sfreqs.pop()
+    durations = [raw.n_times / sfreq for raw in neural]
+    sound = _audio_features(
+        bids_root, runs, event_tables, durations, audio, envelope_method, stim_sfreq
+    )
+    feature_sfreq = stim_sfreq if sound else sfreq
     stimulus = _impulse_stimulus(
         event_tables,
-        [raw.n_times for raw in neural],
-        sfreq,
+        [round(duration * feature_sfreq) for duration in durations],
+        feature_sfreq,
         event_column,
         set(ignore_events),
     )
+    if sound:
+        names = tuple(name for name, _ in sound)
+        tracks = tuple(trials for _, trials in sound)
+        if stimulus is not None:
+            names += stimulus.names
+            tracks += stimulus.features
+        stimulus = CNDStimulus(names=names, features=tracks, sfreq=feature_sfreq)
     sidecar = _read_json(_sibling(runs[0], "eeg", ".json"))
     manufacturer = sidecar.get("Manufacturer")
     return from_mne(
@@ -1042,6 +1071,78 @@ def _subject_runs(
     if not runs:
         raise FileNotFoundError(f"No BIDS EEG recordings found for {query}")
     return sorted(runs, key=lambda path: int(path.run or 0))
+
+
+def _audio_features(
+    bids_root: str | Path,
+    runs: Sequence[Any],
+    tables: list[list[dict[str, str]]],
+    durations: list[float],
+    pattern: str | None,
+    method: EnvelopeMethod,
+    sfreq: float,
+) -> list[tuple[str, tuple[np.ndarray, ...]]]:
+    """Speech Envelope (and Word Onset) tracks per run, or [] if no audio."""
+    root = Path(bids_root).expanduser()
+    played: list[list[tuple[Path, float]]] = []
+    for bids_path, table in zip(runs, tables, strict=True):
+        clips = [
+            (root / "stimuli" / row["stim_file"], float(row["onset"]))
+            for row in table
+            if row.get("stim_file", "n/a") not in ("", "n/a")
+            and row["stim_file"].lower().endswith(".wav")
+        ]
+        if not clips and pattern is not None:
+            run = int(bids_path.run) if bids_path.run else len(played) + 1
+            name = pattern.format(
+                run=run, subject=bids_path.subject, task=bids_path.task
+            )
+            clips = [(root / name, 0.0)]
+        played.append(clips)
+    if not any(played):
+        return []
+    for clips in played:
+        for path, _ in clips:
+            if not path.is_file():
+                raise FileNotFoundError(f"Audio file not found: {path}")
+
+    def track(
+        duration: float, clips: list[tuple[Path, float]], words: bool
+    ) -> np.ndarray:
+        out = np.zeros(round(duration * sfreq))
+        for path, onset in clips:
+            start = round(onset * sfreq)
+            if words:
+                grid = path.with_suffix(".TextGrid")
+                for word in textgrid_word_onsets(grid):
+                    sample = start + round(word * sfreq)
+                    if 0 <= sample < len(out):
+                        out[sample] = 1.0
+            else:
+                envelope = audio_envelope(path, sfreq, method)
+                piece = envelope[: max(0, len(out) - start)]
+                out[start : start + len(piece)] = piece
+        return out
+
+    features = [
+        (
+            "Speech Envelope",
+            tuple(track(d, c, False) for d, c in zip(durations, played, strict=True)),
+        )
+    ]
+    has_grids = all(
+        path.with_suffix(".TextGrid").is_file() for clips in played for path, _ in clips
+    )
+    if has_grids:
+        features.append(
+            (
+                "Word Onset",
+                tuple(
+                    track(d, c, True) for d, c in zip(durations, played, strict=True)
+                ),
+            )
+        )
+    return features
 
 
 def _impulse_stimulus(

@@ -127,6 +127,24 @@ def build_parser() -> argparse.ArgumentParser:
         "trial_type, else value)",
     )
     from_bids.add_argument(
+        "--audio",
+        help="audio per run when events.tsv has no stim_file, e.g. "
+        '"stimuli/audio{run:02d}.wav" (adds Speech Envelope, and Word Onset '
+        "from .TextGrid files)",
+    )
+    from_bids.add_argument(
+        "--envelope-method",
+        choices=("hilbert", "mtrf"),
+        default="hilbert",
+        help="hilbert: as in CNSP datasets (default); mtrf: mTRFenvelope",
+    )
+    from_bids.add_argument(
+        "--stim-sfreq",
+        type=float,
+        default=128.0,
+        help="sampling rate of the stimulus features when audio is used",
+    )
+    from_bids.add_argument(
         "--treat-misc-as-eeg",
         action="store_true",
         help="count channels typed n/a (misc) as EEG",
@@ -254,6 +272,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_unit=args.output_unit,
                 event_column=args.event_column,
                 treat_misc_as_eeg=args.treat_misc_as_eeg,
+                audio=args.audio,
+                envelope_method=args.envelope_method,
+                stim_sfreq=args.stim_sfreq,
             )
         except (FileNotFoundError, CNDValidationError) as error:
             print(f"error: {error}", file=sys.stderr)
